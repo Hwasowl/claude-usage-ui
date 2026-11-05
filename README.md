@@ -5,7 +5,9 @@ Claude Code 입력창 위에 5시간/주간 사용량과 컨텍스트 사용률�
 
 막대 색은 기본으로 40% 이상 주황, 80% 이상 빨강입니다. 배너의 톱니(⚙)를 누르면 설정창이 열리고, 5시간/주간/컨텍스트별로 기준을 바꿀 수 있습니다.
 
-<img width="785" height="144" alt="image" src="https://github.com/user-attachments/assets/2e0c415c-052d-4bde-8c69-15a05150b53b" />
+<img width="796" height="147" alt="image" src="https://github.com/user-attachments/assets/fa76990f-3f8b-43e4-a5fe-49c739ecf861" />
+
+<img width="785" height="266" alt="image" src="https://github.com/user-attachments/assets/babc7772-7930-4fbe-91bb-5eacb2988462" />
 
 
 
