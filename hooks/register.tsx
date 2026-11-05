@@ -96,6 +96,14 @@ const setOn = async ($: EngineInterface, on: boolean) => {
   await $.store.set('isOn', on)
 }
 
+// /autocompact 로 압축 기준을 바꾸면 모델 창은 그대로라 캐시가 안 풀림. 명령이 끝나면 다시 읽음
+const recheck = async ($: EngineInterface) => {
+  maxFor = undefined
+  const u = await $.session.usage()
+  const v = await withLast($, { ...(await ctxOf($, u.context)), rateLimits: u.rateLimits })
+  await update($, usage, () => v)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // ~/.claude/commands/cs-on.md 가 있으면 그게 목록에 뜨므로 중복 등록 안 함
@@ -120,7 +128,20 @@ export const register: Register = on => {
     return { text: '사용량 배너를 껐습니다.' }
   })
 
+  on('command.run', { command: 'autocompact' }, async ($, e, next) => {
+    const r = await next(e)
+    await recheck($)
+    return r
+  })
+  on('config.set', async ($, e, next) => {
+    const r = await next(e)
+    if (/compact/i.test(e.key)) await recheck($)
+    return r
+  })
+
   on('session.measure', async ($, e, next) => {
+    // 다른 경로(설정 파일 직접 수정 등)로 바뀐 것도 답변이 올 때마다 다시 읽어 맞춤
+    maxFor = undefined
     const u = await withLast($, { ...(await ctxOf($, e.context)), rateLimits: e.rateLimits })
     await update($, usage, () => u)
     return next(e)
