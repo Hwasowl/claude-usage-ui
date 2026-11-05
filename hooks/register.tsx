@@ -64,10 +64,11 @@ const STYLE = `<style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{f
 @media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>`
 type Col = { name: string; n?: number; note: string; c: string }
 const svgBand = (cols: Col[]) => {
+  const L = 5 // 배너 왼쪽 끝에서 5px 띄움
   const W = 180
   const g = cols
     .map((c, i) => {
-      const x = i * (W + 24)
+      const x = L + i * (W + 24)
       const w = Math.max(0, Math.min(100, c.n ?? 0)) / 100 * W
       return `<text x="${x}" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}</tspan></text>
 <text x="${x + W}" y="11" class="v" text-anchor="end">${pct(c.n)}</text>
@@ -75,7 +76,7 @@ const svgBand = (cols: Col[]) => {
 <rect x="${x}" y="17" width="${Math.max(w, c.n ? 5 : 0)}" height="5" rx="2.5" class="${c.c}"/>`
     })
     .join('')
-  const total = cols.length * (W + 24) - 24
+  const total = L + cols.length * (W + 24) - 24
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="22" viewBox="0 0 ${total} 22">
 ${STYLE}${g}</svg>`
 }
@@ -325,7 +326,7 @@ export const register: Register = on => {
         </Box>
       )
       return (
-        <Box flexDirection="column" paddingX="md">{/* 양옆 여백: 아래 입력창의 + 버튼과 왼쪽 시작을 맞춤 */}
+        <Box flexDirection="column">
           <Box alignItems="center" gap={3}>
             <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
             {/* 사용량 글자(예: 292.3k / 1M) 바로 오른쪽 작은 버튼: 누르면 아래에 항목별 상세가 펼쳐지고 다시 누르면 접힘 */}
