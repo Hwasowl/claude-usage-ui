@@ -255,7 +255,7 @@ export const register: Register = on => {
       if (n !== undefined) void setLevels($, l => ({ ...l, [id]: { ...l[id], [which]: n } }))
     }
     const row = (id: keyof Levels, name: string, base: string) => (
-      <Box key={`set-${id}`} flexDirection="column" marginBottom={1}>
+      <Box key={`set-${id}`} flexDirection="column" gap={1} marginBottom={2}>
         <Text weight="semibold">{name}</Text>
         {Svg && <Svg key={`scale-${id}`} source={svgScale(lv[id], base)} alt={`${name} 주황 ${lv[id].warn}%, 빨강 ${lv[id].err}%`} />}
         <Box gap={2}>
@@ -269,7 +269,6 @@ export const register: Register = on => {
         {row('five', '5시간 세션', 'ac')}
         {row('week', '주간 세션', 'ac')}
         {row('ctx', '컨텍스트', 'ok')}
-        <Text dimColor>1~100 사이 숫자. 주황 시작보다 낮으면 기본색, 빨강 시작 이상이면 빨간색입니다.</Text>
         <Button key="reset" variant="secondary" onPress={() => setLevels($, () => DEFAULT_LEVELS)}>
           <Text>기본값으로 (40% / 80%)</Text>
         </Button>
