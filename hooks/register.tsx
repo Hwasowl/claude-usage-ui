@@ -5,6 +5,7 @@ import type { Level, Levels, Limit, Usage } from '../types'
 
 const usage = atom({ plugin: 'usage-band', key: 'usage' } as const, null)
 const isOn = atom({ plugin: 'usage-band', key: 'isOn' } as const, true)
+const ctxOpen = atom({ plugin: 'usage-band', key: 'ctxOpen' } as const, false) // 컨텍스트 상세 펼침 여부
 
 // 막대 색 기준. 기본은 셋 다 40% 주황, 80% 빨강. 설정 창에서 바꾸면 store에 남아 다음 세션에도 유지
 const DEFAULT_LEVELS: Levels = { five: { warn: 40, err: 80 }, week: { warn: 40, err: 80 }, ctx: { warn: 40, err: 80 } }
@@ -26,7 +27,6 @@ const openSettings = async ($: EngineInterface) => {
   if (open) await $.ui.close({ id: SETTINGS })
   else await $.ui.open({ id: SETTINGS, title: '사용량 배너 색 기준', focus: true, closeOnEscape: true })
 }
-const HOVER_CTX = 'usage-band-ctx' // 컨텍스트 칸과 그 아래 상세 목록을 묶는 호버 그룹
 
 const pct = (n?: number) => (n === undefined ? '-' : `${Math.round(n)}%`)
 
@@ -215,6 +215,7 @@ export const register: Register = on => {
       ])
       const ctxSvg = svgFill({ name: '컨텍스트', n: ctx, note: ctxText(u), c: tone(ctx, lv.ctx, 'ok') })
       const b = lastBreakdown
+      const open = await read($, ctxOpen)
       const max = b?.rawMaxTokens || 1
       const line = (key: string, name: string, colr: string | undefined, tokens: string, part: string, dim = false) => (
         <Box key={key} gap={2}>
@@ -228,9 +229,12 @@ export const register: Register = on => {
         <Box flexDirection="column">
           <Box alignItems="center" gap={3}>
             <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
-            {/* 컨텍스트 칸에 마우스를 올리면 아래에 항목별 상세가 펼쳐짐. 상세 위에 있는 동안은 계속 열림 */}
-            <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} hover={{ scope: HOVER_CTX }}>
-              <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
+            {/* 컨텍스트 앞 작은 버튼: 누르면 아래에 항목별 상세가 펼쳐지고 다시 누르면 접힘 */}
+            <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} alignItems="center" gap={1}>
+              <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
+              <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
+              </Box>
             </Box>
             <Box alignItems="center" gap={1}>
               <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
@@ -240,7 +244,7 @@ export const register: Register = on => {
               <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
             </Box>
           </Box>
-          <Box display="none" hover={{ scope: HOVER_CTX, display: 'flex' }} flexDirection="column" gap={1} marginTop={1}>
+          <Box display={open ? 'flex' : 'none'} flexDirection="column" gap={1} marginTop={1}>
             {b ? (
               <Box flexDirection="column" gap={1}>
                 <Box justifyContent="space-between">
