@@ -65,7 +65,18 @@ const svgBand = (cols: Col[]) => {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="22" viewBox="0 0 ${total} 22">
 ${STYLE}${g}</svg>`
 }
-// 컨텍스트 칸의 막대만 그림. 글자는 버튼을 바로 옆에 붙이려고 그림 밖 Text로 그림.
+// 컨텍스트 칸 윗줄 글자. 5시간/주간 칸과 같은 글꼴, 간격(dx=6)으로 그리고, 버튼을 바로 옆에 붙이려고
+// 글자 길이만큼만 폭을 잡음(한글 12px, 그 외 6.5px 정도로 어림)
+const textW = (t: string, ko: number, en: number) => [...t].reduce((w, ch) => w + (/[가-힣]/.test(ch) ? ko : en), 0)
+const svgLabel = (name: string, note: string) => {
+  const w = Math.ceil(textW(name, 12, 7) + 6 + textW(note, 11, 6.2)) + 2
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="14" viewBox="0 0 ${w} 14">
+${STYLE}<text x="0" y="11" class="l">${name}<tspan class="m" dx="6">${note}</tspan></text></svg>`
+}
+const svgValue = (v: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="14" viewBox="0 0 40 14">
+${STYLE}<text x="40" y="11" class="v" text-anchor="end">${v}</text></svg>`
+// 컨텍스트 칸의 막대
 // viewBox 없이 퍼센트 길이라 남은 폭을 다 써도 모양이 안 늘어남
 const svgBar = (n: number | undefined, c: string) => {
   const w = Math.max(0, Math.min(100, n ?? 0))
@@ -231,16 +242,15 @@ export const register: Register = on => {
             {/* 사용량 글자(예: 292.3k / 1M) 바로 오른쪽 작은 버튼: 누르면 아래에 항목별 상세가 펼쳐지고 다시 누르면 접힘 */}
             <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} flexDirection="column">
               <Box alignItems="center">
-                <Text size="caption" dimColor wrap="truncate-end">컨텍스트 </Text>
-                <Text size="caption" dimColor wrap="truncate-end">{ctxText(u)}</Text>
+                <Svg key="ctxlabel" source={svgLabel('컨텍스트', ctxText(u))} alt={`컨텍스트 ${ctxText(u)}`} />
                 <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
                 <Box flexGrow={1} />
-                <Text size="caption" weight="medium" wrap="truncate-end">{pct(ctx)}</Text>
+                <Svg key="ctxpct" source={svgValue(pct(ctx))} alt={pct(ctx)} />
               </Box>
               <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
             </Box>
             <Box alignItems="center" gap={1}>
-              <Button key="compact" label="🔨" dimColor onPress={() => $.session.compact()} />
+              <Button key="compact" label="⚒︎" dimColor onPress={() => $.session.compact()} />
               <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
               <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
             </Box>
@@ -282,7 +292,7 @@ export const register: Register = on => {
         {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
         {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
         {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
-        <Button key="compact" label="🔨" dimColor onPress={() => $.session.compact()} />
+        <Button key="compact" label="⚒︎" dimColor onPress={() => $.session.compact()} />
         <Text> </Text>
         <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
         <Text> </Text>
