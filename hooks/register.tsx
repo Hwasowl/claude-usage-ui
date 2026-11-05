@@ -22,6 +22,8 @@ const setLevels = async ($: EngineInterface, fn: (l: Levels) => Levels) => {
 const SETTINGS = 'usage-band-settings'
 const openSettings = ($: EngineInterface) =>
   $.ui.open({ id: SETTINGS, title: '사용량 배너 색 기준', focus: true, closeOnEscape: true })
+const DETAIL = 'usage-band-context'
+const openDetail = ($: EngineInterface) => $.ui.open({ id: DETAIL, title: '컨텍스트 상세', closeOnEscape: true })
 
 const pct = (n?: number) => (n === undefined ? '-' : `${Math.round(n)}%`)
 
@@ -212,6 +214,7 @@ export const register: Register = on => {
           <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0}>
             <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
           </Box>
+          <Button key="detail" label="›" dimColor onPress={() => openDetail($)} />
           <Box alignItems="center" gap={1}>
             <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
               <Text>압축</Text>
@@ -235,6 +238,8 @@ export const register: Register = on => {
         {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
         {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
         {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
+        <Button key="detail" label="›" dimColor onPress={() => openDetail($)} />
+        <Text> </Text>
         <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
           <Text>압축</Text>
         </Button>
@@ -272,6 +277,41 @@ export const register: Register = on => {
         <Button key="reset" variant="secondary" onPress={() => setLevels($, () => DEFAULT_LEVELS)}>
           <Text>기본값으로 (40% / 80%)</Text>
         </Button>
+      </Box>
+    )
+  })
+
+  // 컨텍스트 상세: /context 와 같은 항목별 사용량. summary 분해는 로컬 추정이라 API 호출 없음
+  on('ui.render', { component: 'Pane', requestId: DETAIL }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e) as any
+    await read($, usage) // 답변이 올 때마다 다시 그리도록 구독
+    const b = await $.session.usage({ breakdown: 'summary' }).then(r => r.context.breakdown, () => undefined)
+    if (!b) return <Text dimColor>아직 컨텍스트 정보가 없습니다. 메시지를 한 번 보낸 뒤 다시 열어 주세요.</Text>
+    const max = b.rawMaxTokens || 1
+    const share = (n: number) => `${((n / max) * 100).toFixed(1)}%`
+    const line = (key: string, name: string, color: string | undefined, tokens: string, part: string, dim = false) => (
+      <Box key={key} gap={2}>
+        <Box width={2}><Text color={color}>{color ? '■' : ' '}</Text></Box>
+        <Box flexGrow={1}><Text dimColor={dim}>{name}</Text></Box>
+        <Box width={9} justifyContent="flex-end"><Text dimColor={dim}>{tokens}</Text></Box>
+        <Box width={7} justifyContent="flex-end"><Text dimColor>{part}</Text></Box>
+      </Box>
+    )
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Box justifyContent="space-between">
+          <Text weight="semibold">{Math.round(b.percentage)}% 사용됨</Text>
+          <Text>{k(b.totalTokens)} / {k(max)}</Text>
+        </Box>
+        <Box flexDirection="column">
+          {b.categories.map((c, i) =>
+            line(`c${i}`, c.name, c.color, k(c.tokens), c.isDeferred ? '—' : share(c.tokens), c.isDeferred),
+          )}
+        </Box>
+        <Box flexDirection="column">
+          {line('mcp', 'MCP 도구', undefined, String(b.mcpTools.length), '', true)}
+          {line('mem', '메모리 파일', undefined, String(b.memoryFiles.length), '', true)}
+        </Box>
       </Box>
     )
   })
