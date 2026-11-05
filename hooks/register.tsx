@@ -146,6 +146,16 @@ const withLast = async ($: EngineInterface, u: Usage): Promise<Usage> => {
   return { ...u, rateLimits }
 }
 
+// 망치 버튼: /compact 를 직접 입력한 것과 같은 경로로 실행(진행 표시도 똑같이 나옴).
+// 응답이 진행 중이면 엔진이 거부하므로, 조용히 실패하지 않게 안내를 띄움
+const compactNow = async ($: EngineInterface) => {
+  try {
+    await $.command.run({ command: 'compact' })
+  } catch (err) {
+    $.ui.toast(`압축하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 const setOn = async ($: EngineInterface, on: boolean) => {
   await update($, isOn, () => on)
   await $.store.set('isOn', on)
@@ -250,7 +260,7 @@ export const register: Register = on => {
               <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
             </Box>
             <Box alignItems="center" gap={1}>
-              <Button key="compact" label="⚒︎" dimColor onPress={() => $.session.compact()} />
+              <Button key="compact" label="⚒︎" dimColor onPress={() => compactNow($)} />
               <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
               <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
             </Box>
@@ -292,7 +302,7 @@ export const register: Register = on => {
         {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
         {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
         {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
-        <Button key="compact" label="⚒︎" dimColor onPress={() => $.session.compact()} />
+        <Button key="compact" label="⚒︎" dimColor onPress={() => compactNow($)} />
         <Text> </Text>
         <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
         <Text> </Text>
