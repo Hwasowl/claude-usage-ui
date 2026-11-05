@@ -71,27 +71,22 @@ const setOn = async ($: EngineInterface, on: boolean) => {
   await $.store.set('isOn', on)
 }
 
-// 지금 사용량을 다시 읽어 배너에 반영. 5시간/주간 값은 마지막 응답 기준이라 대화가 오가야 바뀜
-const refresh = async ($: EngineInterface) => {
-  const u = await $.session.usage()
-  const v = await withLast($, { contextPercent: u.context.percent, rateLimits: u.rateLimits })
-  await update($, usage, () => v)
-}
-
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // ~/.claude/commands/cs-on.md 가 있으면 그게 목록에 뜨므로 중복 등록 안 함
     await ensureCommands($)
     const saved = await $.store.get('isOn')
     if (typeof saved === 'boolean') await update($, isOn, () => saved)
-    await refresh($)
+    const u = await $.session.usage()
+    { const v = await withLast($, { contextPercent: u.context.percent, rateLimits: u.rateLimits }); await update($, usage, () => v) }
     return next(e)
   })
 
   on('command.run', { command: 'cs-on' }, async $ => {
     await setOn($, true)
     // 켜자마자 보이도록 지금 사용량을 바로 읽음(안 하면 다음 측정 때까지 비어 있음)
-    await refresh($)
+    const u = await $.session.usage()
+    { const v = await withLast($, { contextPercent: u.context.percent, rateLimits: u.rateLimits }); await update($, usage, () => v) }
     return { text: '사용량 배너를 켰습니다.' }
   })
 
@@ -133,7 +128,6 @@ export const register: Register = on => {
         <Box justifyContent="space-between" alignItems="center">
           <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}, 컨텍스트 ${pct(ctx)}`} />
           <Box alignItems="center" gap={1}>
-            <Button key="refresh" label="↻" variant="secondary" onPress={() => refresh($)} />
             <Button key="compact" variant={hot0 ? 'primary' : 'secondary'} onPress={() => $.session.compact()}>
               <Text color={hot0 ? 'warning' : undefined}>세션 압축</Text>
             </Button>
@@ -156,8 +150,6 @@ export const register: Register = on => {
         {col('5시간', five, reset(u.rateLimits, 'five_hour'))}
         {col('주간', week, reset(u.rateLimits, 'seven_day'))}
         {col('컨텍스트', ctx, hot ? '압축 권장' : '여유')}
-        <Button key="refresh" label="↻" onPress={() => refresh($)} />
-        <Text> </Text>
         <Button key="compact" variant={hot ? 'primary' : 'secondary'} onPress={() => $.session.compact()}>
           <Text color={hot ? 'warning' : undefined}>세션 압축</Text>
         </Button>
