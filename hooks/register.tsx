@@ -8,7 +8,7 @@ const isOn = atom({ plugin: 'usage-band', key: 'isOn' } as const, true)
 
 const pct = (n?: number) => (n === undefined ? '-' : `${Math.round(n)}%`)
 
-const CTX_WARN = 40 // 컨텍스트가 이 값을 넘으면 세션 압축 버튼 색이 바뀜
+const CTX_WARN = 40 // 컨텍스트가 이 값을 넘으면 컨텍스트 막대가 주황색으로 바뀜
 const color = (n = 0) => (n >= 95 ? 'error' : n >= 80 ? 'warning' : 'success')
 const bar = (n = 0) => {
   const on = Math.max(0, Math.min(8, Math.round(n / 12.5)))
@@ -24,33 +24,40 @@ const reset = (list: Limit[], kind: string) => {
 }
 
 // 시안 A 그대로의 그림. 라이트/다크는 시스템 설정을 따름(prefers-color-scheme)
-const svgBand = (cols: { name: string; n?: number; note: string; c: string; v?: string; W?: number }[]) => {
-  let x = 0
+const STYLE = `<style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{font-size:12px;fill:#5f5e5a}.v{font-size:12px;font-weight:500;fill:#141413}.m{font-size:11px;fill:#8a8985}
+.t{fill:rgba(0,0,0,.1)}.ok{fill:#3b8f3b}.ac{fill:#2c84db}.wn{fill:#d99a00}.er{fill:#d33f3f}
+@media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>`
+type Col = { name: string; n?: number; note: string; c: string }
+const svgBand = (cols: Col[]) => {
+  const W = 168
   const g = cols
-    .map(c => {
-      const W = c.W ?? 168
+    .map((c, i) => {
+      const x = i * (W + 24)
       const w = Math.max(0, Math.min(100, c.n ?? 0)) / 100 * W
-      const s = `<text x="${x}" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}</tspan></text>
-<text x="${x + W}" y="11" class="v" text-anchor="end">${c.v ?? pct(c.n)}</text>
+      return `<text x="${x}" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}</tspan></text>
+<text x="${x + W}" y="11" class="v" text-anchor="end">${pct(c.n)}</text>
 <rect x="${x}" y="17" width="${W}" height="5" rx="2.5" class="t"/>
 <rect x="${x}" y="17" width="${Math.max(w, c.n ? 5 : 0)}" height="5" rx="2.5" class="${c.c}"/>`
-      x += W + 24
-      return s
     })
     .join('')
-  const total = x - 24
+  const total = cols.length * (W + 24) - 24
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="22" viewBox="0 0 ${total} 22">
-<style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{font-size:12px;fill:#5f5e5a}.v{font-size:12px;font-weight:500;fill:#141413}.m{font-size:11px;fill:#8a8985}
-.t{fill:rgba(0,0,0,.1)}.ok{fill:#3b8f3b}.ac{fill:#2c84db}.wn{fill:#d99a00}.er{fill:#d33f3f}
-@media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>${g}</svg>`
+${STYLE}${g}</svg>`
+}
+// 컨텍스트 칸은 남은 폭을 다 쓰도록 viewBox 없이 퍼센트 길이로 그림(늘려도 글자는 안 늘어남)
+const svgFill = (c: Col) => {
+  const n = Math.max(0, Math.min(100, c.n ?? 0))
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="22">
+${STYLE}<text x="0" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}</tspan></text>
+<text x="100%" y="11" class="v" text-anchor="end">${pct(c.n)}</text>
+<rect x="0" y="17" width="100%" height="5" rx="2.5" class="t"/>
+<rect x="0" y="17" width="${n}%" height="5" rx="2.5" class="${c.c}"/></svg>`
 }
 const tone = (n = 0, base = 'ac') => (n >= 95 ? 'er' : n >= 80 ? 'wn' : base)
 
 const k = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${+(n / 1000).toFixed(1)}k`)
 const ctxText = (u: Usage) =>
-  u.contextTokens === undefined || u.contextMax === undefined
-    ? pct(u.contextPercent)
-    : `${k(u.contextTokens)} / ${k(u.contextMax)} (${pct(u.contextPercent)})`
+  u.contextTokens === undefined || u.contextMax === undefined ? '' : `${k(u.contextTokens)} / ${k(u.contextMax)}`
 
 // 분모는 모델 최대 창이 아니라 압축 기준 창(사용자가 400k 등으로 줄였으면 그 값).
 // summary 분해는 로컬 추정이라 API 호출 없음. 모델 창이 바뀔 때만 다시 읽음
@@ -175,11 +182,14 @@ export const register: Register = on => {
       const svg = svgBand([
         { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five) },
         { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week) },
-        { name: '컨텍스트', n: ctx, note: hot0 ? '압축 권장' : '', c: hot0 ? 'wn' : tone(ctx, 'ok'), v: ctxText(u), W: 236 },
       ])
+      const ctxSvg = svgFill({ name: '컨텍스트', n: ctx, note: ctxText(u), c: hot0 ? 'wn' : tone(ctx, 'ok') })
       return (
-        <Box justifyContent="space-between" alignItems="center">
-          <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}, 컨텍스트 ${ctxText(u)}`} />
+        <Box alignItems="center" gap={3}>
+          <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
+          <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0}>
+            <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
+          </Box>
           <Box alignItems="center" gap={1}>
             <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
               <Text>세션 압축</Text>
@@ -189,20 +199,19 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const col = (name: string, n: number | undefined, note: string, v = pct(n)) => (
+    const col = (name: string, n: number | undefined, note: string) => (
       <Box key={name} marginRight={2}>
         <Text dimColor>{name} </Text>
         <Text color={color(n)}>{bar(n)}</Text>
-        <Text> {v} </Text>
+        <Text> {pct(n)} </Text>
         <Text dimColor>{note}</Text>
       </Box>
     )
-    const hot = (ctx ?? 0) >= CTX_WARN
     return (
       <Box>
         {col('5시간', five, reset(u.rateLimits, 'five_hour'))}
         {col('주간', week, reset(u.rateLimits, 'seven_day'))}
-        {col('컨텍스트', ctx, hot ? '압축 권장' : '여유', ctxText(u))}
+        {col('컨텍스트', ctx, ctxText(u))}
         <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
           <Text>세션 압축</Text>
         </Button>
