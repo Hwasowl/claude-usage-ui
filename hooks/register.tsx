@@ -55,7 +55,9 @@ const ctxText = (u: Usage) =>
 // 분모는 모델 최대 창이 아니라 압축 기준 창(사용자가 400k 등으로 줄였으면 그 값).
 // summary 분해는 로컬 추정이라 API 호출 없음. 모델 창이 바뀔 때만 다시 읽음
 let maxFor: { window: number; max: number } | undefined
+let seenWindow: number | undefined // 배너가 마지막으로 반영한 모델 창. 그릴 때 이것과 다르면 모델이 바뀐 것
 const ctxOf = async ($: EngineInterface, c: SessionContextUsage) => {
+  seenWindow = c.window
   if (maxFor?.window !== c.window) {
     const b = await $.session.usage({ breakdown: 'summary' }).then(r => r.context.breakdown, () => undefined)
     // 세션이 아직 안 붙어 분해가 없으면 캐시하지 않고 다음에 다시 시도
@@ -128,6 +130,13 @@ export const register: Register = on => {
     await ensureCommands($)
     let u = await read($, usage)
     if (e.props.hasSurvey || !(await read($, isOn))) return next(e)
+    // 중간에 모델을 바꾸면 창 크기가 달라짐. 기본 호출은 비용이 없어서 그릴 때마다 확인
+    const now = await $.session.usage()
+    if (u !== null && now.context.window !== seenWindow) {
+      const v = await withLast($, { ...(await ctxOf($, now.context)), rateLimits: now.rateLimits })
+      u = v
+      await update($, usage, () => v)
+    }
     // 첫 메시지 전에는 값이 비어 있으므로 다시 읽어 보고, 그래도 비면 '-'로 표시(켰는데 안 보이면 혼란)
     if (u === null || (u.contextPercent === undefined && u.rateLimits.length === 0)) {
       const n = await $.session.usage()
