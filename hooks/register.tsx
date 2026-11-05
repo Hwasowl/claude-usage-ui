@@ -50,7 +50,7 @@ const k = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${+(n / 1000
 const ctxText = (u: Usage) =>
   u.contextTokens === undefined || u.contextMax === undefined
     ? pct(u.contextPercent)
-    : `${k(u.contextTokens)} / ${k(u.contextMax)}`
+    : `${k(u.contextTokens)} / ${k(u.contextMax)} (${pct(u.contextPercent)})`
 
 // 분모는 모델 최대 창이 아니라 압축 기준 창(사용자가 400k 등으로 줄였으면 그 값).
 // summary 분해는 로컬 추정이라 API 호출 없음. 모델 창이 바뀔 때만 다시 읽음
@@ -175,7 +175,7 @@ export const register: Register = on => {
       const svg = svgBand([
         { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five) },
         { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week) },
-        { name: '컨텍스트', n: ctx, note: hot0 ? '압축 권장' : '', c: hot0 ? 'wn' : tone(ctx, 'ok'), v: ctxText(u), W: 200 },
+        { name: '컨텍스트', n: ctx, note: hot0 ? '압축 권장' : '', c: hot0 ? 'wn' : tone(ctx, 'ok'), v: ctxText(u), W: 236 },
       ])
       return (
         <Box justifyContent="space-between" alignItems="center">
