@@ -6,6 +6,6 @@ export type Levels = { five: Level; week: Level; ctx: Level }
 
 declare module 'claude-code' {
   interface PluginState {
-    'usage-band': { usage: Usage | null; isOn: boolean; levels: Levels; settingsOpen: boolean }
+    'usage-band': { usage: Usage | null; isOn: boolean; levels: Levels }
   }
 }
