@@ -1,0 +1,5 @@
+{
+  "name": "claude-usage-ui",
+  "owner": { "name": "Hwasowl" },
+  "plugins": [{ "name": "usage-band", "source": "./" }]
+}
