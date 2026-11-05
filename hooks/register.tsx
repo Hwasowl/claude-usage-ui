@@ -231,17 +231,15 @@ export const register: Register = on => {
             {/* 컨텍스트 글자 바로 오른쪽 작은 버튼: 누르면 아래에 항목별 상세가 펼쳐지고 다시 누르면 접힘 */}
             <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} flexDirection="column">
               <Box alignItems="center">
-                <Text size="footnote" dimColor>컨텍스트</Text>
+                <Text size="caption" dimColor wrap="truncate-end">컨텍스트</Text>
                 <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
-                <Box flexGrow={1} marginLeft={1}><Text size="footnote" dimColor>{ctxText(u)}</Text></Box>
-                <Text size="footnote" weight="medium">{pct(ctx)}</Text>
+                <Box flexGrow={1} flexShrink={1} minWidth={0} marginLeft={1}><Text size="caption" dimColor wrap="truncate-end">{ctxText(u)}</Text></Box>
+                <Text size="caption" weight="medium" wrap="truncate-end">{pct(ctx)}</Text>
               </Box>
               <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
             </Box>
             <Box alignItems="center" gap={1}>
-              <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
-                <Text>🗜 대화 압축</Text>
-              </Button>
+              <Button key="compact" label="🗜" dimColor onPress={() => $.session.compact()} />
               <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
               <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
             </Box>
@@ -283,9 +281,7 @@ export const register: Register = on => {
         {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
         {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
         {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
-        <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
-          <Text>🗜 대화 압축</Text>
-        </Button>
+        <Button key="compact" label="🗜" dimColor onPress={() => $.session.compact()} />
         <Text> </Text>
         <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
         <Text> </Text>
