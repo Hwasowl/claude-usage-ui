@@ -1,15 +1,31 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage } from 'claude-code'
 
-import type { Limit, Usage } from '../types'
+import type { Level, Levels, Limit, Usage } from '../types'
 
 const usage = atom({ plugin: 'usage-band', key: 'usage' } as const, null)
 const isOn = atom({ plugin: 'usage-band', key: 'isOn' } as const, true)
 
+// 막대 색 기준. 기본은 셋 다 40% 주황, 80% 빨강. 설정 창에서 바꾸면 store에 남아 다음 세션에도 유지
+const DEFAULT_LEVELS: Levels = { five: { warn: 40, err: 80 }, week: { warn: 40, err: 80 }, ctx: { warn: 40, err: 80 } }
+const levels = atom({ plugin: 'usage-band', key: 'levels' } as const, DEFAULT_LEVELS)
+const isLevel = (v: unknown): v is Level =>
+  typeof v === 'object' && v !== null && typeof (v as Level).warn === 'number' && typeof (v as Level).err === 'number'
+const isLevels = (v: unknown): v is Levels =>
+  typeof v === 'object' && v !== null && ['five', 'week', 'ctx'].every(k => isLevel((v as Record<string, unknown>)[k]))
+const setLevels = async ($: EngineInterface, fn: (l: Levels) => Levels) => {
+  const v = fn(await read($, levels))
+  await update($, levels, () => v)
+  await $.store.set('levels', v)
+}
+
+const SETTINGS = 'usage-band-settings'
+const openSettings = ($: EngineInterface) =>
+  $.ui.open({ id: SETTINGS, title: '사용량 배너 색 기준', focus: true, closeOnEscape: true })
+
 const pct = (n?: number) => (n === undefined ? '-' : `${Math.round(n)}%`)
 
-const CTX_WARN = 40 // 컨텍스트가 이 값을 넘으면 컨텍스트 막대가 주황색으로 바뀜
-const color = (n = 0) => (n >= 95 ? 'error' : n >= 80 ? 'warning' : 'success')
+const color = (n = 0, l: Level) => (n >= l.err ? 'error' : n >= l.warn ? 'warning' : 'success')
 const bar = (n = 0) => {
   const on = Math.max(0, Math.min(8, Math.round(n / 12.5)))
   return '▰'.repeat(on) + '▱'.repeat(8 - on)
@@ -53,7 +69,7 @@ ${STYLE}<text x="0" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}<
 <rect x="0" y="17" width="100%" height="5" rx="2.5" class="t"/>
 <rect x="0" y="17" width="${n}%" height="5" rx="2.5" class="${c.c}"/></svg>`
 }
-const tone = (n = 0, base = 'ac') => (n >= 95 ? 'er' : n >= 80 ? 'wn' : base)
+const tone = (n = 0, l: Level, base = 'ac') => (n >= l.err ? 'er' : n >= l.warn ? 'wn' : base)
 
 const k = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${+(n / 1000).toFixed(1)}k`)
 const ctxText = (u: Usage) =>
@@ -117,6 +133,8 @@ export const register: Register = on => {
     await ensureCommands($)
     const saved = await $.store.get('isOn')
     if (typeof saved === 'boolean') await update($, isOn, () => saved)
+    const lv = await $.store.get('levels')
+    if (isLevels(lv)) await update($, levels, () => lv)
     const u = await $.session.usage()
     { const v = await withLast($, { ...(await ctxOf($, u.context)), rateLimits: u.rateLimits }); await update($, usage, () => v) }
     return next(e)
@@ -177,13 +195,13 @@ export const register: Register = on => {
     const five = u.rateLimits.find(r => r.kind === 'five_hour')?.percentUsed
     const week = u.rateLimits.find(r => r.kind === 'seven_day')?.percentUsed
     const ctx = u.contextPercent
-    const hot0 = (ctx ?? 0) >= CTX_WARN
+    const lv = await read($, levels)
     if (Svg) {
       const svg = svgBand([
-        { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five) },
-        { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week) },
+        { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five, lv.five) },
+        { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week, lv.week) },
       ])
-      const ctxSvg = svgFill({ name: '컨텍스트', n: ctx, note: ctxText(u), c: hot0 ? 'wn' : tone(ctx, 'ok') })
+      const ctxSvg = svgFill({ name: '컨텍스트', n: ctx, note: ctxText(u), c: tone(ctx, lv.ctx, 'ok') })
       return (
         <Box alignItems="center" gap={3}>
           <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
@@ -192,31 +210,65 @@ export const register: Register = on => {
           </Box>
           <Box alignItems="center" gap={1}>
             <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
-              <Text>세션 압축</Text>
+              <Text>압축</Text>
+            </Button>
+            <Button key="settings" variant="secondary" onPress={() => openSettings($)}>
+              <Text>설정</Text>
             </Button>
             <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
           </Box>
         </Box>
       )
     }
-    const col = (name: string, n: number | undefined, note: string) => (
+    const col = (name: string, n: number | undefined, note: string, l: Level) => (
       <Box key={name} marginRight={2}>
         <Text dimColor>{name} </Text>
-        <Text color={color(n)}>{bar(n)}</Text>
+        <Text color={color(n, l)}>{bar(n)}</Text>
         <Text> {pct(n)} </Text>
         <Text dimColor>{note}</Text>
       </Box>
     )
     return (
       <Box>
-        {col('5시간', five, reset(u.rateLimits, 'five_hour'))}
-        {col('주간', week, reset(u.rateLimits, 'seven_day'))}
-        {col('컨텍스트', ctx, ctxText(u))}
+        {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
+        {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
+        {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
         <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
-          <Text>세션 압축</Text>
+          <Text>압축</Text>
+        </Button>
+        <Text> </Text>
+        <Button key="settings" variant="secondary" onPress={() => openSettings($)}>
+          <Text>설정</Text>
         </Button>
         <Text> </Text>
         <Button key="close" label="✕" dimColor onPress={() => setOn($, false)} />
+      </Box>
+    )
+  })
+
+  // 설정 창: 막대별로 주황/빨강이 시작되는 % 선택
+  on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
+    const { Box, Text, Select, Button } = $.ui.resolve(e) as any
+    const lv = await read($, levels)
+    const opts = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map(n => ({ value: String(n), label: `${n}%` }))
+    const pick = (id: keyof Levels, which: keyof Level) => (v: string) =>
+      setLevels($, l => ({ ...l, [id]: { ...l[id], [which]: Number(v) } }))
+    const row = (id: keyof Levels, name: string) => (
+      <Box key={id} flexDirection="column" marginBottom={1}>
+        <Text weight="semibold">{name}</Text>
+        <Select key={`${id}-warn`} label="주황 시작 " options={opts} value={String(lv[id].warn)} onSelect={pick(id, 'warn')} />
+        <Select key={`${id}-err`} label="빨강 시작 " options={opts} value={String(lv[id].err)} onSelect={pick(id, 'err')} />
+      </Box>
+    )
+    return (
+      <Box flexDirection="column">
+        {row('five', '5시간 세션')}
+        {row('week', '주간 세션')}
+        {row('ctx', '컨텍스트')}
+        <Text dimColor>주황 시작보다 낮으면 기본색, 빨강 시작 이상이면 빨간색입니다.</Text>
+        <Button key="reset" variant="secondary" onPress={() => setLevels($, () => DEFAULT_LEVELS)}>
+          <Text>기본값으로 (40% / 80%)</Text>
+        </Button>
       </Box>
     )
   })
