@@ -3,6 +3,9 @@
 Claude Code 입력창 위에 5시간/주간 사용량과 컨텍스트 사용률을 보여주는 배너입니다.
 `/cs-on`으로 켜고 `/cs-off`로 끕니다.
 
+<img width="797" height="149" alt="image" src="https://github.com/user-attachments/assets/35f87b63-ffd3-41e7-8be7-f50969f26781" />
+
+
 ## 설치
 
 터미널 세션의 프롬프트에서:
