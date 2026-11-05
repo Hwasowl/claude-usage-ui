@@ -8,6 +8,6 @@ export type Bg = { id: string; description: string; type: string; status: string
 
 declare module 'claude-code' {
   interface PluginState {
-    'usage-band': { usage: Usage | null; isOn: boolean; levels: Levels; ctxOpen: boolean; agents: Bg[]; bgOpen: boolean }
+    'usage-band': { usage: Usage | null; isOn: boolean; ctxOpen: boolean; agents: Bg[]; bgOpen: boolean }
   }
 }

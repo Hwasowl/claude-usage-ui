@@ -15,6 +15,13 @@ const STATUS_KO: Record<string, string> = { pending: '대기', running: '실행 
 let poll: { cancel: () => void } | undefined
 // 목록을 다시 읽어 상태에 넣음. 하나라도 돌고 있으면 2초마다 다시 읽고, 다 끝나면 멈춤
 // (끝남을 알려주는 이벤트가 따로 없어서 도는 동안만 짧게 확인)
+// 아래 펼침 창은 한 번에 하나만: 컨텍스트 상세(▾)와 서브에이전트 목록(로봇) 중 하나를 열면 다른 쪽은 닫음
+const toggleOnly = async ($: EngineInterface, which: 'ctx' | 'bg', force?: boolean) => {
+  const cur = which === 'ctx' ? await read($, ctxOpen) : await read($, bgOpen)
+  const on = force ?? !cur
+  await update($, ctxOpen, () => which === 'ctx' && on)
+  await update($, bgOpen, () => which === 'bg' && on)
+}
 const refreshAgents = async ($: EngineInterface) => {
   const list = await $.agent.list().catch(() => [])
   const v: Bg[] = list
@@ -23,7 +30,7 @@ const refreshAgents = async ($: EngineInterface) => {
   const prev = await read($, agents)
   if (JSON.stringify(prev) !== JSON.stringify(v)) await update($, agents, () => v)
   // 없다가 생기면 목록을 자동으로 펼치고, 다 끝나면 접음. 그 사이엔 로봇 버튼으로 직접 접고 폄
-  if (!prev.length && v.length) await update($, bgOpen, () => true)
+  if (!prev.length && v.length) await toggleOnly($, 'bg', true)
   if (prev.length && !v.length) await update($, bgOpen, () => false)
   if (v.length && !poll) poll = $.clock.every(2000, () => void refreshAgents($))
   if (!v.length && poll) {
@@ -32,26 +39,8 @@ const refreshAgents = async ($: EngineInterface) => {
   }
 }
 
-// 막대 색 기준. 기본은 셋 다 40% 주황, 80% 빨강. 설정 창에서 바꾸면 store에 남아 다음 세션에도 유지
-const DEFAULT_LEVELS: Levels = { five: { warn: 40, err: 80 }, week: { warn: 40, err: 80 }, ctx: { warn: 40, err: 80 } }
-const levels = atom({ plugin: 'usage-band', key: 'levels' } as const, DEFAULT_LEVELS)
-const isLevel = (v: unknown): v is Level =>
-  typeof v === 'object' && v !== null && typeof (v as Level).warn === 'number' && typeof (v as Level).err === 'number'
-const isLevels = (v: unknown): v is Levels =>
-  typeof v === 'object' && v !== null && ['five', 'week', 'ctx'].every(k => isLevel((v as Record<string, unknown>)[k]))
-const setLevels = async ($: EngineInterface, fn: (l: Levels) => Levels) => {
-  const v = fn(await read($, levels))
-  await update($, levels, () => v)
-  await $.store.set('levels', v)
-}
-
-const SETTINGS = 'usage-band-settings'
-// 톱니를 다시 누르면 닫힘. 열림 여부는 엔진 기록(panes)으로 확인해 Esc로 닫은 경우도 맞게 동작
-const openSettings = async ($: EngineInterface) => {
-  const open = (await $.ui.panes()).some(p => p.id === SETTINGS)
-  if (open) await $.ui.close({ id: SETTINGS })
-  else await $.ui.open({ id: SETTINGS, title: '사용량 배너 색 기준', focus: true, closeOnEscape: true })
-}
+// 막대 색 기준(고정): 이 % 이상이면 주황, 빨강. 5시간/주간 50/80, 컨텍스트 30/60
+const LEVELS: Levels = { five: { warn: 50, err: 80 }, week: { warn: 50, err: 80 }, ctx: { warn: 30, err: 60 } }
 
 const pct = (n?: number) => (n === undefined ? '-' : `${Math.round(n)}%`)
 
@@ -75,7 +64,7 @@ const STYLE = `<style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{f
 @media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>`
 type Col = { name: string; n?: number; note: string; c: string }
 const svgBand = (cols: Col[]) => {
-  const W = 172
+  const W = 180
   const g = cols
     .map((c, i) => {
       const x = i * (W + 24)
@@ -126,31 +115,6 @@ const KIND_ORDER = { used: 0, deferred: 1, buffer: 2, free: 3 } as const
 const byUse = (cs: readonly SessionContextBreakdown['categories'][number][]) =>
   [...cs].sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9) || b.tokens - a.tokens)
 const tone = (n = 0, l: Level, base = 'ac') => (n >= l.err ? 'er' : n >= l.warn ? 'wn' : base)
-// 설정 카드의 눈금: 둥근 막대를 기본/주황/빨강 구간으로 칠하고, 기준 위치에 값 표시, 아래 10% 눈금과 0/50/100
-const svgScale = (l: Level, base: string) => {
-  const W = 300, P = 14 // 양끝 글자가 안 잘리게 여백
-  const x = (p: number) => P + (Math.max(0, Math.min(100, p)) / 100) * (W - 2 * P)
-  const warn = Math.min(l.warn, l.err)
-  const ticks = Array.from({ length: 11 }, (_, i) => `<line x1="${x(i * 10)}" y1="${i % 5 ? 30 : 29}" x2="${x(i * 10)}" y2="33" class="tk"/>`).join('')
-  const tag = (p: number, c: string) => `<text x="${x(p)}" y="10" class="${c}t" text-anchor="middle">${p}%</text>
-<line x1="${x(p)}" y1="13" x2="${x(p)}" y2="27" class="${c}s"/>`
-  const lab = (p: number) => `<text x="${x(p)}" y="44" class="m" text-anchor="middle">${p}</text>`
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="48" viewBox="0 0 ${W} 48">
-${STYLE}<style>.tk{stroke:rgba(0,0,0,.25);stroke-width:1}.wnt,.ert{font-size:11px;font-weight:600}.wnt{fill:#b07d00}.ert{fill:#c03535}
-.wns{stroke:#d99a00;stroke-width:2}.ers{stroke:#d33f3f;stroke-width:2}
-@media (prefers-color-scheme:dark){.tk{stroke:rgba(255,255,255,.3)}.wnt{fill:#f0b429}.ert{fill:#f06a6a}.wns{stroke:#f0b429}.ers{stroke:#f06a6a}}</style>
-<defs><clipPath id="r"><rect x="${P}" y="16" width="${W - 2 * P}" height="8" rx="4"/></clipPath></defs>
-<g clip-path="url(#r)" opacity=".85"><rect x="${P}" y="16" width="${x(warn) - P}" height="8" class="${base}"/>
-<rect x="${x(warn)}" y="16" width="${Math.max(0, x(l.err) - x(warn))}" height="8" class="wn"/>
-<rect x="${x(l.err)}" y="16" width="${W - P - x(l.err)}" height="8" class="er"/></g>
-${tag(l.warn, 'wn')}${tag(l.err, 'er')}${ticks}${lab(0)}${lab(50)}${lab(100)}</svg>`
-}
-// 입력값은 1~100 정수만 받음. 그 외는 무시(입력 중간 상태일 수 있음)
-const toPct = (v: string) => {
-  const n = Number(v.trim())
-  return Number.isInteger(n) && n >= 1 && n <= 100 ? n : undefined
-}
-
 const k = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${+(n / 1000).toFixed(1)}k`)
 const ctxText = (u: Usage) =>
   u.contextTokens === undefined || u.contextMax === undefined ? '' : `${k(u.contextTokens)} / ${k(u.contextMax)}`
@@ -236,8 +200,6 @@ export const register: Register = on => {
     await ensureCommands($)
     const saved = await $.store.get('isOn')
     if (typeof saved === 'boolean') await update($, isOn, () => saved)
-    const lv = await $.store.get('levels')
-    if (isLevels(lv)) await update($, levels, () => lv)
     const u = await $.session.usage()
     { const v = await withLast($, { ...(await ctxOf($, u.context)), rateLimits: u.rateLimits }); await update($, usage, () => v) }
     return next(e)
@@ -316,14 +278,14 @@ export const register: Register = on => {
     const five = u.rateLimits.find(r => r.kind === 'five_hour')?.percentUsed
     const week = u.rateLimits.find(r => r.kind === 'seven_day')?.percentUsed
     const ctx = u.contextPercent
-    const lv = await read($, levels)
+    const lv = LEVELS
     const bg = await read($, agents)
     const bgShown = await read($, bgOpen)
     // 로봇 버튼은 항상 보임. 돌고 있는 서브에이전트가 있으면 앱 알림처럼 오른쪽 위에 빨간 동그라미 숫자.
     // 버튼 안에는 그림을 못 넣어서, 버튼을 감싼 칸 위에 동그라미를 겹쳐 그림(누르는 건 그대로 버튼)
     const robot = (
       <Box key="agentswrap" position="relative">
-        <Button key="agents" label="🤖︎" dimColor onPress={() => update($, bgOpen, v => !v)} />
+        <Button key="agents" label="🤖︎" dimColor onPress={() => toggleOnly($, 'bg')} />
         {bg.length > 0 && Svg && (
           <Box position="absolute" top={0} right={0}>
             <Svg key="badge" source={svgBadge(bg.length)} alt={`서브에이전트 ${bg.length}개`} />
@@ -355,11 +317,11 @@ export const register: Register = on => {
       const open = await read($, ctxOpen)
       const max = b?.rawMaxTokens || 1
       const line = (key: string, name: string, colr: string | undefined, tokens: string, part: string, dim = false) => (
-        <Box key={key} gap={2}>
+        <Box key={key} gap={3}>
           <Box width={2}><Text color={colr}>{colr ? '■' : ' '}</Text></Box>
           <Box flexGrow={1}><Text dimColor={dim}>{name}</Text></Box>
-          <Box width={9} justifyContent="flex-end"><Text dimColor={dim}>{tokens}</Text></Box>
-          <Box width={7} justifyContent="flex-end"><Text dimColor>{part}</Text></Box>
+          <Box width={12} justifyContent="flex-end"><Text dimColor={dim}>{tokens}</Text></Box>
+          <Box width={9} justifyContent="flex-end"><Text dimColor>{part}</Text></Box>
         </Box>
       )
       return (
@@ -377,16 +339,15 @@ export const register: Register = on => {
                 </Box>
                 <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
               </Box>
-              <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
+              <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => toggleOnly($, 'ctx')} />
               {/* 오른쪽 버튼들을 컨텍스트 칸 안(gap 1)에 둬서 ▾ 바로 옆에 가깝게 붙임 */}
               {robot}
-              <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
               <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
             </Box>
           </Box>
-          <Box display={open ? 'flex' : 'none'} flexDirection="column" gap={1} marginTop={1}>
+          <Box display={open ? 'flex' : 'none'} flexDirection="column" gap={2} marginTop={1} paddingY={1}>
             {b ? (
-              <Box flexDirection="column" gap={1}>
+              <Box flexDirection="column" gap={2}>
                 <Box justifyContent="space-between">
                   <Text weight="semibold">{Math.round(b.percentage)}% 사용됨</Text>
                   <Text>{k(b.totalTokens)} / {k(max)}</Text>
@@ -423,9 +384,7 @@ export const register: Register = on => {
           {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
           {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
           {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
-          <Button key="agents" label={bg.length ? `🤖︎ ${bg.length}` : '🤖︎'} dimColor onPress={() => update($, bgOpen, v => !v)} />
-          <Text> </Text>
-          <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
+          <Button key="agents" label={bg.length ? `🤖︎ ${bg.length}` : '🤖︎'} dimColor onPress={() => toggleOnly($, 'bg')} />
           <Text> </Text>
           <Button key="close" label="✕" dimColor onPress={() => setOn($, false)} />
         </Box>
@@ -434,41 +393,5 @@ export const register: Register = on => {
     )
   })
 
-  // 설정 창: 막대마다 10% 눈금 막대와 주황/빨강 시작 % 입력칸
-  on('ui.render', { component: 'Pane', requestId: SETTINGS }, async ($, e) => {
-    const { Box, Text, Input, Button, Svg } = $.ui.resolve(e) as any
-    const lv = await read($, levels)
-    const set = (id: keyof Levels, which: keyof Level) => (v: string) => {
-      const n = toPct(v)
-      if (n !== undefined) void setLevels($, l => ({ ...l, [id]: { ...l[id], [which]: n } }))
-    }
-    const row = (id: keyof Levels, name: string, desc: string, base: string) => (
-      <Box key={`set-${id}`} flexDirection="column" gap={1} borderStyle="round" borderDimColor paddingX={2} paddingY={1}>
-        <Box alignItems="center" gap={1}>
-          <Text weight="semibold">{name}</Text>
-          <Text dimColor>{desc}</Text>
-        </Box>
-        {Svg && <Svg key={`scale-${id}`} source={svgScale(lv[id], base)} alt={`${name} 주황 ${lv[id].warn}%, 빨강 ${lv[id].err}%`} />}
-        <Box gap={2}>
-          <Input key={`${id}-warn`} label="주황부터 (%)" value={String(lv[id].warn)} onInput={set(id, 'warn')} onSubmit={set(id, 'warn')} />
-          <Input key={`${id}-err`} label="빨강부터 (%)" value={String(lv[id].err)} onInput={set(id, 'err')} onSubmit={set(id, 'err')} />
-        </Box>
-      </Box>
-    )
-    return (
-      <Box flexDirection="column" gap={2} padding={1} width="100%" minHeight="100%">
-        {row('five', '5시간 세션', '5시간마다 리셋', 'ac')}
-        {row('week', '주간 세션', '일주일마다 리셋', 'ac')}
-        {row('ctx', '컨텍스트', '압축 기준 대비', 'ok')}
-        <Box flexGrow={1} />
-        {/* 기본값 되돌리기는 창 맨 오른쪽 아래 */}
-        <Box width="100%" justifyContent="flex-end">
-          <Button key="reset" variant="secondary" onPress={() => setLevels($, () => DEFAULT_LEVELS)}>
-            <Text>기본값으로 되돌리기 (40% / 80%)</Text>
-          </Button>
-        </Box>
-      </Box>
-    )
-  })
 
 }
