@@ -65,14 +65,13 @@ const svgBand = (cols: Col[]) => {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="22" viewBox="0 0 ${total} 22">
 ${STYLE}${g}</svg>`
 }
-// 컨텍스트 칸은 남은 폭을 다 쓰도록 viewBox 없이 퍼센트 길이로 그림(늘려도 글자는 안 늘어남)
-const svgFill = (c: Col) => {
-  const n = Math.max(0, Math.min(100, c.n ?? 0))
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="22">
-${STYLE}<text x="0" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}</tspan></text>
-<text x="100%" y="11" class="v" text-anchor="end">${pct(c.n)}</text>
-<rect x="0" y="17" width="100%" height="5" rx="2.5" class="t"/>
-<rect x="0" y="17" width="${n}%" height="5" rx="2.5" class="${c.c}"/></svg>`
+// 컨텍스트 칸의 막대만 그림. 글자는 버튼을 바로 옆에 붙이려고 그림 밖 Text로 그림.
+// viewBox 없이 퍼센트 길이라 남은 폭을 다 써도 모양이 안 늘어남
+const svgBar = (n: number | undefined, c: string) => {
+  const w = Math.max(0, Math.min(100, n ?? 0))
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="6">
+${STYLE}<rect x="0" y="0" width="100%" height="5" rx="2.5" class="t"/>
+<rect x="0" y="0" width="${w}%" height="5" rx="2.5" class="${c}"/></svg>`
 }
 const tone = (n = 0, l: Level, base = 'ac') => (n >= l.err ? 'er' : n >= l.warn ? 'wn' : base)
 // 설정 줄의 눈금: 0~100을 기본/주황/빨강 구간으로 칠하고 10%마다 세로선
@@ -213,7 +212,7 @@ export const register: Register = on => {
         { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five, lv.five) },
         { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week, lv.week) },
       ])
-      const ctxSvg = svgFill({ name: '컨텍스트', n: ctx, note: ctxText(u), c: tone(ctx, lv.ctx, 'ok') })
+      const ctxSvg = svgBar(ctx, tone(ctx, lv.ctx, 'ok'))
       const b = lastBreakdown
       const open = await read($, ctxOpen)
       const max = b?.rawMaxTokens || 1
@@ -229,16 +228,19 @@ export const register: Register = on => {
         <Box flexDirection="column">
           <Box alignItems="center" gap={3}>
             <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
-            {/* 컨텍스트 앞 작은 버튼: 누르면 아래에 항목별 상세가 펼쳐지고 다시 누르면 접힘 */}
-            <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} alignItems="center" gap={1}>
-              <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
-              <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
+            {/* 컨텍스트 글자 바로 오른쪽 작은 버튼: 누르면 아래에 항목별 상세가 펼쳐지고 다시 누르면 접힘 */}
+            <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} flexDirection="column">
+              <Box alignItems="center">
+                <Text size="footnote" dimColor>컨텍스트</Text>
+                <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
+                <Box flexGrow={1} marginLeft={1}><Text size="footnote" dimColor>{ctxText(u)}</Text></Box>
+                <Text size="footnote" weight="medium">{pct(ctx)}</Text>
               </Box>
+              <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
             </Box>
             <Box alignItems="center" gap={1}>
               <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
-                <Text>압축</Text>
+                <Text>🗜 대화 압축</Text>
               </Button>
               <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
               <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
@@ -282,7 +284,7 @@ export const register: Register = on => {
         {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
         {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
         <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
-          <Text>압축</Text>
+          <Text>🗜 대화 압축</Text>
         </Button>
         <Text> </Text>
         <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
