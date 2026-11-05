@@ -50,7 +50,7 @@ const STYLE = `<style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{f
 @media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>`
 type Col = { name: string; n?: number; note: string; c: string }
 const svgBand = (cols: Col[]) => {
-  const W = 168
+  const W = 185
   const g = cols
     .map((c, i) => {
       const x = i * (W + 24)
@@ -67,8 +67,10 @@ ${STYLE}${g}</svg>`
 }
 // 컨텍스트 칸 윗줄 글자. 5시간/주간 칸과 같은 글꼴, 간격(dx=6)으로 그리고, 버튼을 바로 옆에 붙이려고
 // 글자 길이만큼만 폭을 잡음(한글 12px, 그 외 6.5px 정도로 어림)
-const textW = (t: string, ko: number, en: number) => [...t].reduce((w, ch) => w + (/[가-힣]/.test(ch) ? ko : en), 0)
+const textW = (t: string, ko: number, en: number) =>
+  [...t].reduce((w, ch) => w + (/[가-힣]/.test(ch) ? ko : /[ ./]/.test(ch) ? en * 0.6 : /[MW]/.test(ch) ? en * 1.6 : en), 0)
 const svgLabel = (name: string, note: string) => {
+  // 끝에 2px 여유: 어림이 모자라 마지막 글자(M 등)가 잘리지 않게
   const w = Math.ceil(textW(name, 12, 7) + 6 + textW(note, 11, 6.2)) + 2
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="14" viewBox="0 0 ${w} 14">
 ${STYLE}<text x="0" y="11" class="l">${name}<tspan class="m" dx="6">${note}</tspan></text></svg>`
@@ -111,6 +113,8 @@ const ctxText = (u: Usage) =>
 let maxFor: { window: number; max: number } | undefined
 // 호버 상세용: 마지막으로 읽은 항목별 분해. 그리는 중엔 계산을 새로 하지 않고 이걸 보여줌(답변마다 갱신)
 let lastBreakdown: SessionContextBreakdown | undefined
+// 압축 직후 토큰 수. 엔진은 다음 답변이 올 때까지 압축 전 값을 주므로 그동안 이걸 보여줌
+let compacted: number | undefined
 const ctxOf = async ($: EngineInterface, c: SessionContextUsage) => {
   if (maxFor?.window !== c.window) {
     const b = await $.session.usage({ breakdown: 'summary' }).then(r => r.context.breakdown, () => undefined)
@@ -120,6 +124,7 @@ const ctxOf = async ($: EngineInterface, c: SessionContextUsage) => {
   }
   const max = maxFor?.window === c.window ? maxFor.max : c.window
   const percent = c.tokens === undefined ? c.percent : Math.min(100, (c.tokens / max) * 100)
+  if (compacted !== undefined) return { contextPercent: Math.min(100, (compacted / max) * 100), contextTokens: compacted, contextMax: max }
   return { contextPercent: percent, contextTokens: c.tokens, contextMax: max }
 }
 
@@ -133,17 +138,36 @@ const ensureCommands = async ($: EngineInterface) => {
 // 5시간/주간은 계정 단위라 세션이 바뀌어도 같음. 새 세션에서 비어 있으면 마지막에 본 값을 씀
 const withLast = async ($: EngineInterface, u: Usage): Promise<Usage> => {
   if (u.rateLimits.length > 0) {
-    await $.store.set('lastLimits', u.rateLimits)
-    return u
+    const raw = await $.store.get('lastLimits')
+    const merged = newest(Array.isArray(raw) ? (raw as Limit[]) : [], u.rateLimits)
+    await $.store.set('lastLimits', merged)
+    return { ...u, rateLimits: expire(merged) }
   }
-  const saved = await $.store.get('lastLimits')
-  if (!Array.isArray(saved)) return u
+  const rateLimits = await storedLimits($)
+  return rateLimits ? { ...u, rateLimits } : u
+}
+// 세션마다 마지막 답변 시점의 값을 들고 있어서, 오래 쉰 세션은 낡은 값(예: 37%)을 줌. 값에 시각이 없으므로
+// 종류별로 리셋 시각이 늦은 쪽(새 구간)을, 같으면 퍼센트가 큰 쪽을 새 값으로 봄(한 구간 안에선 줄지 않음)
+const newest = (a: readonly Limit[], b: readonly Limit[]): Limit[] => {
+  const t = (r?: Limit) => (r?.resetsAt ? new Date(r.resetsAt).getTime() : 0)
+  const kinds = [...new Set([...a, ...b].map(r => r.kind))]
+  return kinds.map(kind => {
+    const x = a.find(r => r.kind === kind)
+    const y = b.find(r => r.kind === kind)
+    if (!x || !y) return (x ?? y)!
+    if (t(x) !== t(y)) return t(x) > t(y) ? x : y
+    return (y.percentUsed ?? 0) >= (x.percentUsed ?? 0) ? y : x
+  })
+}
+// 리셋 시각이 지난 값은 이미 초기화된 것이므로 0%로 봄
+const expire = (ls: readonly Limit[]): Limit[] => {
   const now = Date.now()
-  // 리셋 시각이 지난 값은 이미 초기화된 것이므로 0%로 봄
-  const rateLimits = (saved as Limit[]).map(r =>
-    r.resetsAt && new Date(r.resetsAt).getTime() <= now ? { kind: r.kind, percentUsed: 0 } : r,
-  )
-  return { ...u, rateLimits }
+  return ls.map(r => (r.resetsAt && new Date(r.resetsAt).getTime() <= now ? { kind: r.kind, percentUsed: 0 } : r))
+}
+// 모든 세션이 같은 저장소에 쓰고, 쓸 때 더 새 값만 남기므로 여기엔 어느 세션이든 가장 최근 값이 있음
+const storedLimits = async ($: EngineInterface): Promise<Limit[] | undefined> => {
+  const saved = await $.store.get('lastLimits')
+  return Array.isArray(saved) ? expire(saved as Limit[]) : undefined
 }
 
 // 망치 버튼: /compact 를 직접 입력한 것과 같은 경로로 실행(진행 표시도 똑같이 나옴).
@@ -206,7 +230,21 @@ export const register: Register = on => {
     return r
   })
 
+  on('session.compact', async ($, e, next) => {
+    const r = await next(e)
+    // 서브에이전트 자기 압축, 미리 계산(precompute), 건너뜀은 본 대화가 안 바뀜
+    if (r.skip === undefined && !e.agentId && e.trigger !== 'precompute') {
+      maxFor = undefined
+      const b = await $.session.usage({ breakdown: 'summary' }).then(x => x.context.breakdown, () => undefined)
+      if (b) lastBreakdown = b
+      compacted = r.tokensAfter ?? b?.totalTokens
+      await recheck($)
+    }
+    return r
+  })
+
   on('session.measure', async ($, e, next) => {
+    compacted = undefined
     // 다른 경로(설정 파일 직접 수정 등)로 바뀐 것도 답변이 올 때마다 다시 읽어 맞춤
     maxFor = undefined
     const u = await withLast($, { ...(await ctxOf($, e.context)), rateLimits: e.rateLimits })
@@ -221,7 +259,9 @@ export const register: Register = on => {
     // 그리는 중에는 상태를 쓸 수 없어서(엔진이 거부) 읽기만 함. 컨텍스트는 그릴 때마다 지금 값을 읽어
     // 모델을 바꾼 직후에도 맞게 나옴(기본 호출은 비용 없음). 5시간/주간은 저장된 값, 없으면 지금 값
     const now = await $.session.usage()
-    const u: Usage = { rateLimits: saved?.rateLimits.length ? saved.rateLimits : now.rateLimits, ...(await ctxOf($, now.context)) }
+    // 5시간/주간은 계정 단위: 다른 세션에서 갱신된 값이 이 세션 것보다 새로우므로 공유 저장소를 먼저 봄
+    const limits = (await storedLimits($)) ?? (saved?.rateLimits.length ? saved.rateLimits : now.rateLimits)
+    const u: Usage = { rateLimits: limits, ...(await ctxOf($, now.context)) }
 
     const { Box, Button, Text, Svg } = $.ui.resolve(e) as any
     const five = u.rateLimits.find(r => r.kind === 'five_hour')?.percentUsed
