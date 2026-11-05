@@ -1,5 +1,5 @@
 export type Limit = { kind: string; percentUsed: number; resetsAt?: string }
-export type Usage = { contextPercent?: number; rateLimits: Limit[] }
+export type Usage = { contextPercent?: number; contextTokens?: number; contextMax?: number; rateLimits: Limit[] }
 
 declare module 'claude-code' {
   interface PluginState {

@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, SessionContextUsage } from 'claude-code'
 
 import type { Limit, Usage } from '../types'
 
@@ -24,24 +24,47 @@ const reset = (list: Limit[], kind: string) => {
 }
 
 // 시안 A 그대로의 그림. 라이트/다크는 시스템 설정을 따름(prefers-color-scheme)
-const svgBand = (cols: { name: string; n?: number; note: string; c: string }[]) => {
-  const W = 168
+const svgBand = (cols: { name: string; n?: number; note: string; c: string; v?: string; W?: number }[]) => {
+  let x = 0
   const g = cols
-    .map((c, i) => {
-      const x = i * (W + 24)
+    .map(c => {
+      const W = c.W ?? 168
       const w = Math.max(0, Math.min(100, c.n ?? 0)) / 100 * W
-      return `<text x="${x}" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}</tspan></text>
-<text x="${x + W}" y="11" class="v" text-anchor="end">${pct(c.n)}</text>
+      const s = `<text x="${x}" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}</tspan></text>
+<text x="${x + W}" y="11" class="v" text-anchor="end">${c.v ?? pct(c.n)}</text>
 <rect x="${x}" y="17" width="${W}" height="5" rx="2.5" class="t"/>
 <rect x="${x}" y="17" width="${Math.max(w, c.n ? 5 : 0)}" height="5" rx="2.5" class="${c.c}"/>`
+      x += W + 24
+      return s
     })
     .join('')
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${3 * W + 48}" height="22" viewBox="0 0 ${3 * W + 48} 22">
+  const total = x - 24
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="22" viewBox="0 0 ${total} 22">
 <style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{font-size:12px;fill:#5f5e5a}.v{font-size:12px;font-weight:500;fill:#141413}.m{font-size:11px;fill:#8a8985}
 .t{fill:rgba(0,0,0,.1)}.ok{fill:#3b8f3b}.ac{fill:#2c84db}.wn{fill:#d99a00}.er{fill:#d33f3f}
 @media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>${g}</svg>`
 }
 const tone = (n = 0, base = 'ac') => (n >= 95 ? 'er' : n >= 80 ? 'wn' : base)
+
+const k = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}k`)
+const ctxText = (u: Usage) =>
+  u.contextTokens === undefined || u.contextMax === undefined
+    ? pct(u.contextPercent)
+    : `${k(u.contextTokens)}/${k(u.contextMax)} ${pct(u.contextPercent)}`
+
+// 분모는 모델 최대 창이 아니라 압축 기준 창(사용자가 400k 등으로 줄였으면 그 값).
+// summary 분해는 로컬 추정이라 API 호출 없음. 모델 창이 바뀔 때만 다시 읽음
+let maxFor: { window: number; max: number } | undefined
+const ctxOf = async ($: EngineInterface, c: SessionContextUsage) => {
+  if (maxFor?.window !== c.window) {
+    const b = await $.session.usage({ breakdown: 'summary' }).then(r => r.context.breakdown, () => undefined)
+    // 세션이 아직 안 붙어 분해가 없으면 캐시하지 않고 다음에 다시 시도
+    if (b?.rawMaxTokens) maxFor = { window: c.window, max: b.rawMaxTokens }
+  }
+  const max = maxFor?.window === c.window ? maxFor.max : c.window
+  const percent = c.tokens === undefined ? c.percent : Math.min(100, (c.tokens / max) * 100)
+  return { contextPercent: percent, contextTokens: c.tokens, contextMax: max }
+}
 
 // session.start는 프로세스당 한 번만 불리므로, 새 세션에서는 배너가 그려질 때도 명령을 등록해 둠
 const ensureCommands = async ($: EngineInterface) => {
@@ -78,7 +101,7 @@ export const register: Register = on => {
     const saved = await $.store.get('isOn')
     if (typeof saved === 'boolean') await update($, isOn, () => saved)
     const u = await $.session.usage()
-    { const v = await withLast($, { contextPercent: u.context.percent, rateLimits: u.rateLimits }); await update($, usage, () => v) }
+    { const v = await withLast($, { ...(await ctxOf($, u.context)), rateLimits: u.rateLimits }); await update($, usage, () => v) }
     return next(e)
   })
 
@@ -86,7 +109,7 @@ export const register: Register = on => {
     await setOn($, true)
     // 켜자마자 보이도록 지금 사용량을 바로 읽음(안 하면 다음 측정 때까지 비어 있음)
     const u = await $.session.usage()
-    { const v = await withLast($, { contextPercent: u.context.percent, rateLimits: u.rateLimits }); await update($, usage, () => v) }
+    { const v = await withLast($, { ...(await ctxOf($, u.context)), rateLimits: u.rateLimits }); await update($, usage, () => v) }
     return { text: '사용량 배너를 켰습니다.' }
   })
 
@@ -96,7 +119,7 @@ export const register: Register = on => {
   })
 
   on('session.measure', async ($, e, next) => {
-    const u = await withLast($, { contextPercent: e.context.percent, rateLimits: e.rateLimits })
+    const u = await withLast($, { ...(await ctxOf($, e.context)), rateLimits: e.rateLimits })
     await update($, usage, () => u)
     return next(e)
   })
@@ -108,7 +131,7 @@ export const register: Register = on => {
     // 첫 메시지 전에는 값이 비어 있으므로 다시 읽어 보고, 그래도 비면 '-'로 표시(켰는데 안 보이면 혼란)
     if (u === null || (u.contextPercent === undefined && u.rateLimits.length === 0)) {
       const n = await $.session.usage()
-      const v = await withLast($, { contextPercent: n.context.percent, rateLimits: n.rateLimits })
+      const v = await withLast($, { ...(await ctxOf($, n.context)), rateLimits: n.rateLimits })
       u = v
       if (v.contextPercent !== undefined || v.rateLimits.length > 0) await update($, usage, () => v)
     }
@@ -122,11 +145,11 @@ export const register: Register = on => {
       const svg = svgBand([
         { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five) },
         { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week) },
-        { name: '컨텍스트', n: ctx, note: hot0 ? '압축 권장' : '', c: hot0 ? 'wn' : tone(ctx, 'ok') },
+        { name: '컨텍스트', n: ctx, note: hot0 ? '압축 권장' : '', c: hot0 ? 'wn' : tone(ctx, 'ok'), v: ctxText(u), W: 228 },
       ])
       return (
         <Box justifyContent="space-between" alignItems="center">
-          <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}, 컨텍스트 ${pct(ctx)}`} />
+          <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}, 컨텍스트 ${ctxText(u)}`} />
           <Box alignItems="center" gap={1}>
             <Button key="compact" variant={hot0 ? 'primary' : 'secondary'} onPress={() => $.session.compact()}>
               <Text color={hot0 ? 'warning' : undefined}>세션 압축</Text>
@@ -136,11 +159,11 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const col = (name: string, n: number | undefined, note: string) => (
+    const col = (name: string, n: number | undefined, note: string, v = pct(n)) => (
       <Box key={name} marginRight={2}>
         <Text dimColor>{name} </Text>
         <Text color={color(n)}>{bar(n)}</Text>
-        <Text> {pct(n)} </Text>
+        <Text> {v} </Text>
         <Text dimColor>{note}</Text>
       </Box>
     )
@@ -149,7 +172,7 @@ export const register: Register = on => {
       <Box>
         {col('5시간', five, reset(u.rateLimits, 'five_hour'))}
         {col('주간', week, reset(u.rateLimits, 'seven_day'))}
-        {col('컨텍스트', ctx, hot ? '압축 권장' : '여유')}
+        {col('컨텍스트', ctx, hot ? '압축 권장' : '여유', ctxText(u))}
         <Button key="compact" variant={hot ? 'primary' : 'secondary'} onPress={() => $.session.compact()}>
           <Text color={hot ? 'warning' : undefined}>세션 압축</Text>
         </Button>
