@@ -20,6 +20,7 @@ const setLevels = async ($: EngineInterface, fn: (l: Levels) => Levels) => {
 }
 
 const SETTINGS = 'usage-band-settings'
+const HOVER = 'usage-band-settings' // 톱니와 설정 줄을 묶는 호버 그룹
 const openSettings = ($: EngineInterface) =>
   $.ui.open({ id: SETTINGS, title: '사용량 배너 색 기준', focus: true, closeOnEscape: true })
 
@@ -70,6 +71,22 @@ ${STYLE}<text x="0" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}<
 <rect x="0" y="17" width="${n}%" height="5" rx="2.5" class="${c.c}"/></svg>`
 }
 const tone = (n = 0, l: Level, base = 'ac') => (n >= l.err ? 'er' : n >= l.warn ? 'wn' : base)
+// 설정 줄의 눈금: 0~100을 기본/주황/빨강 구간으로 칠하고 10%마다 세로선
+const svgScale = (l: Level, base: string) => {
+  const W = 200
+  const x = (p: number) => (Math.max(0, Math.min(100, p)) / 100) * W
+  const ticks = Array.from({ length: 11 }, (_, i) => `<line x1="${Math.min(x(i * 10), W - 0.5)}" y1="2" x2="${Math.min(x(i * 10), W - 0.5)}" y2="14" class="tk"/>`).join('')
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="16" viewBox="0 0 ${W} 16">
+${STYLE}<style>.tk{stroke:rgba(0,0,0,.35);stroke-width:1}@media (prefers-color-scheme:dark){.tk{stroke:rgba(255,255,255,.4)}}</style>
+<rect x="0" y="5" width="${x(Math.min(l.warn, l.err))}" height="6" class="${base}"/>
+<rect x="${x(l.warn)}" y="5" width="${Math.max(0, x(l.err) - x(l.warn))}" height="6" class="wn"/>
+<rect x="${x(l.err)}" y="5" width="${W - x(l.err)}" height="6" class="er"/>${ticks}</svg>`
+}
+// 입력값은 1~100 정수만 받음. 그 외는 무시(입력 중간 상태일 수 있음)
+const toPct = (v: string) => {
+  const n = Number(v.trim())
+  return Number.isInteger(n) && n >= 1 && n <= 100 ? n : undefined
+}
 
 const k = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${+(n / 1000).toFixed(1)}k`)
 const ctxText = (u: Usage) =>
@@ -78,9 +95,7 @@ const ctxText = (u: Usage) =>
 // 분모는 모델 최대 창이 아니라 압축 기준 창(사용자가 400k 등으로 줄였으면 그 값).
 // summary 분해는 로컬 추정이라 API 호출 없음. 모델 창이 바뀔 때만 다시 읽음
 let maxFor: { window: number; max: number } | undefined
-let seenWindow: number | undefined // 배너가 마지막으로 반영한 모델 창. 그릴 때 이것과 다르면 모델이 바뀐 것
 const ctxOf = async ($: EngineInterface, c: SessionContextUsage) => {
-  seenWindow = c.window
   if (maxFor?.window !== c.window) {
     const b = await $.session.usage({ breakdown: 'summary' }).then(r => r.context.breakdown, () => undefined)
     // 세션이 아직 안 붙어 분해가 없으면 캐시하지 않고 다음에 다시 시도
@@ -174,24 +189,14 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     await ensureCommands($)
-    let u = await read($, usage)
+    const saved = await read($, usage)
     if (e.props.hasSurvey || !(await read($, isOn))) return next(e)
-    // 중간에 모델을 바꾸면 창 크기가 달라짐. 기본 호출은 비용이 없어서 그릴 때마다 확인
+    // 그리는 중에는 상태를 쓸 수 없어서(엔진이 거부) 읽기만 함. 컨텍스트는 그릴 때마다 지금 값을 읽어
+    // 모델을 바꾼 직후에도 맞게 나옴(기본 호출은 비용 없음). 5시간/주간은 저장된 값, 없으면 지금 값
     const now = await $.session.usage()
-    if (u !== null && now.context.window !== seenWindow) {
-      const v = await withLast($, { ...(await ctxOf($, now.context)), rateLimits: now.rateLimits })
-      u = v
-      await update($, usage, () => v)
-    }
-    // 첫 메시지 전에는 값이 비어 있으므로 다시 읽어 보고, 그래도 비면 '-'로 표시(켰는데 안 보이면 혼란)
-    if (u === null || (u.contextPercent === undefined && u.rateLimits.length === 0)) {
-      const n = await $.session.usage()
-      const v = await withLast($, { ...(await ctxOf($, n.context)), rateLimits: n.rateLimits })
-      u = v
-      if (v.contextPercent !== undefined || v.rateLimits.length > 0) await update($, usage, () => v)
-    }
+    const u: Usage = { rateLimits: saved?.rateLimits.length ? saved.rateLimits : now.rateLimits, ...(await ctxOf($, now.context)) }
 
-    const { Box, Button, Text, Svg } = $.ui.resolve(e) as any
+    const { Box, Button, Text, Svg, Input } = $.ui.resolve(e) as any
     const five = u.rateLimits.find(r => r.kind === 'five_hour')?.percentUsed
     const week = u.rateLimits.find(r => r.kind === 'seven_day')?.percentUsed
     const ctx = u.contextPercent
@@ -202,20 +207,45 @@ export const register: Register = on => {
         { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week, lv.week) },
       ])
       const ctxSvg = svgFill({ name: '컨텍스트', n: ctx, note: ctxText(u), c: tone(ctx, lv.ctx, 'ok') })
+      const set = (id: keyof Levels, which: keyof Level) => (v: string) => {
+        const n = toPct(v)
+        if (n !== undefined) void setLevels($, l => ({ ...l, [id]: { ...l[id], [which]: n } }))
+      }
+      const row = (id: keyof Levels, name: string, base: string) => (
+        <Box key={`set-${id}`} alignItems="center" gap={2}>
+          <Box width={10}><Text dimColor>{name}</Text></Box>
+          <Svg key={`scale-${id}`} source={svgScale(lv[id], base)} alt={`${name} 주황 ${lv[id].warn}%, 빨강 ${lv[id].err}%`} />
+          <Input key={`${id}-warn`} label="주황 %" value={String(lv[id].warn)} onInput={set(id, 'warn')} onSubmit={set(id, 'warn')} />
+          <Input key={`${id}-err`} label="빨강 %" value={String(lv[id].err)} onInput={set(id, 'err')} onSubmit={set(id, 'err')} />
+        </Box>
+      )
       return (
-        <Box alignItems="center" gap={3}>
-          <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
-          <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0}>
-            <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
+        <Box flexDirection="column">
+          <Box alignItems="center" gap={3}>
+            <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
+            <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0}>
+              <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
+            </Box>
+            <Box alignItems="center" gap={1}>
+              <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
+                <Text>압축</Text>
+              </Button>
+              {/* 톱니에 마우스를 올리면 아래에 색 기준 줄이 펼쳐짐. 그 줄 위에 있는 동안은 계속 열림 */}
+              <Box hover={{ scope: HOVER }}>
+                <Text dimColor>⚙</Text>
+              </Box>
+              <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
+            </Box>
           </Box>
-          <Box alignItems="center" gap={1}>
-            <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
-              <Text>압축</Text>
-            </Button>
-            <Button key="settings" variant="secondary" onPress={() => openSettings($)}>
-              <Text>설정</Text>
-            </Button>
-            <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
+          <Box display="none" hover={{ scope: HOVER, display: 'flex' }} flexDirection="column" marginTop={1}>
+            {row('five', '5시간 세션', 'ac')}
+            {row('week', '주간 세션', 'ac')}
+            {row('ctx', '컨텍스트', 'ok')}
+            <Box>
+              <Button key="reset" variant="secondary" onPress={() => setLevels($, () => DEFAULT_LEVELS)}>
+                <Text>기본값으로 (40% / 80%)</Text>
+              </Button>
+            </Box>
           </Box>
         </Box>
       )
@@ -238,7 +268,7 @@ export const register: Register = on => {
         </Button>
         <Text> </Text>
         <Button key="settings" variant="secondary" onPress={() => openSettings($)}>
-          <Text>설정</Text>
+          <Text>⚙</Text>
         </Button>
         <Text> </Text>
         <Button key="close" label="✕" dimColor onPress={() => setOn($, false)} />
