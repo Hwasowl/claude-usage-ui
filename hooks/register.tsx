@@ -75,7 +75,7 @@ const STYLE = `<style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{f
 @media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>`
 type Col = { name: string; n?: number; note: string; c: string }
 const svgBand = (cols: Col[]) => {
-  const W = 164
+  const W = 172
   const g = cols
     .map((c, i) => {
       const x = i * (W + 24)
@@ -378,8 +378,7 @@ export const register: Register = on => {
                 <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
               </Box>
               <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
-            </Box>
-            <Box alignItems="center" gap={1}>
+              {/* 오른쪽 버튼들을 컨텍스트 칸 안(gap 1)에 둬서 ▾ 바로 옆에 가깝게 붙임 */}
               {robot}
               <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
               <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
