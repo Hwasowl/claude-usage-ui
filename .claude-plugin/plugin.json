@@ -1,6 +1,6 @@
 {
   "name": "usage-band",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "입력창 위에 5시간/주간 사용량과 컨텍스트 사용률을 보여주는 배너 (/cs-on, /cs-off)",
   "types": "./types/index.d.ts"
 }

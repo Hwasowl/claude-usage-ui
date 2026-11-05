@@ -80,6 +80,7 @@ const svgValue = (v: string) =>
 ${STYLE}<text x="40" y="11" class="v" text-anchor="end">${v}</text></svg>`
 // 컨텍스트 칸의 막대
 // viewBox 없이 퍼센트 길이라 남은 폭을 다 써도 모양이 안 늘어남
+// 말풍선(isInteractive + title)은 시도했으나 배너에서 그림 칸이 크게 부풀어 레이아웃이 깨져 뺌
 const svgBar = (n: number | undefined, c: string) => {
   const w = Math.max(0, Math.min(100, n ?? 0))
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="6">
@@ -87,16 +88,24 @@ ${STYLE}<rect x="0" y="0" width="100%" height="5" rx="2.5" class="t"/>
 <rect x="0" y="0" width="${w}%" height="5" rx="2.5" class="${c}"/></svg>`
 }
 const tone = (n = 0, l: Level, base = 'ac') => (n >= l.err ? 'er' : n >= l.warn ? 'wn' : base)
-// 설정 줄의 눈금: 0~100을 기본/주황/빨강 구간으로 칠하고 10%마다 세로선
+// 설정 카드의 눈금: 둥근 막대를 기본/주황/빨강 구간으로 칠하고, 기준 위치에 값 표시, 아래 10% 눈금과 0/50/100
 const svgScale = (l: Level, base: string) => {
-  const W = 200
-  const x = (p: number) => (Math.max(0, Math.min(100, p)) / 100) * W
-  const ticks = Array.from({ length: 11 }, (_, i) => `<line x1="${Math.min(x(i * 10), W - 0.5)}" y1="2" x2="${Math.min(x(i * 10), W - 0.5)}" y2="14" class="tk"/>`).join('')
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="16" viewBox="0 0 ${W} 16">
-${STYLE}<style>.tk{stroke:rgba(0,0,0,.35);stroke-width:1}@media (prefers-color-scheme:dark){.tk{stroke:rgba(255,255,255,.4)}}</style>
-<rect x="0" y="5" width="${x(Math.min(l.warn, l.err))}" height="6" class="${base}"/>
-<rect x="${x(l.warn)}" y="5" width="${Math.max(0, x(l.err) - x(l.warn))}" height="6" class="wn"/>
-<rect x="${x(l.err)}" y="5" width="${W - x(l.err)}" height="6" class="er"/>${ticks}</svg>`
+  const W = 300, P = 14 // 양끝 글자가 안 잘리게 여백
+  const x = (p: number) => P + (Math.max(0, Math.min(100, p)) / 100) * (W - 2 * P)
+  const warn = Math.min(l.warn, l.err)
+  const ticks = Array.from({ length: 11 }, (_, i) => `<line x1="${x(i * 10)}" y1="${i % 5 ? 30 : 29}" x2="${x(i * 10)}" y2="33" class="tk"/>`).join('')
+  const tag = (p: number, c: string) => `<text x="${x(p)}" y="10" class="${c}t" text-anchor="middle">${p}%</text>
+<line x1="${x(p)}" y1="13" x2="${x(p)}" y2="27" class="${c}s"/>`
+  const lab = (p: number) => `<text x="${x(p)}" y="44" class="m" text-anchor="middle">${p}</text>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="48" viewBox="0 0 ${W} 48">
+${STYLE}<style>.tk{stroke:rgba(0,0,0,.25);stroke-width:1}.wnt,.ert{font-size:11px;font-weight:600}.wnt{fill:#b07d00}.ert{fill:#c03535}
+.wns{stroke:#d99a00;stroke-width:2}.ers{stroke:#d33f3f;stroke-width:2}
+@media (prefers-color-scheme:dark){.tk{stroke:rgba(255,255,255,.3)}.wnt{fill:#f0b429}.ert{fill:#f06a6a}.wns{stroke:#f0b429}.ers{stroke:#f06a6a}}</style>
+<defs><clipPath id="r"><rect x="${P}" y="16" width="${W - 2 * P}" height="8" rx="4"/></clipPath></defs>
+<g clip-path="url(#r)" opacity=".85"><rect x="${P}" y="16" width="${x(warn) - P}" height="8" class="${base}"/>
+<rect x="${x(warn)}" y="16" width="${Math.max(0, x(l.err) - x(warn))}" height="8" class="wn"/>
+<rect x="${x(l.err)}" y="16" width="${W - P - x(l.err)}" height="8" class="er"/></g>
+${tag(l.warn, 'wn')}${tag(l.err, 'er')}${ticks}${lab(0)}${lab(50)}${lab(100)}</svg>`
 }
 // 입력값은 1~100 정수만 받음. 그 외는 무시(입력 중간 상태일 수 있음)
 const toPct = (v: string) => {
@@ -359,24 +368,31 @@ export const register: Register = on => {
       const n = toPct(v)
       if (n !== undefined) void setLevels($, l => ({ ...l, [id]: { ...l[id], [which]: n } }))
     }
-    const row = (id: keyof Levels, name: string, base: string) => (
-      <Box key={`set-${id}`} flexDirection="column" gap={1} marginBottom={2}>
-        <Text weight="semibold">{name}</Text>
+    const row = (id: keyof Levels, name: string, desc: string, base: string) => (
+      <Box key={`set-${id}`} flexDirection="column" gap={1} borderStyle="round" borderDimColor paddingX={2} paddingY={1}>
+        <Box alignItems="center" gap={1}>
+          <Text weight="semibold">{name}</Text>
+          <Text dimColor>{desc}</Text>
+        </Box>
         {Svg && <Svg key={`scale-${id}`} source={svgScale(lv[id], base)} alt={`${name} 주황 ${lv[id].warn}%, 빨강 ${lv[id].err}%`} />}
         <Box gap={2}>
-          <Input key={`${id}-warn`} label="주황 %" value={String(lv[id].warn)} onInput={set(id, 'warn')} onSubmit={set(id, 'warn')} />
-          <Input key={`${id}-err`} label="빨강 %" value={String(lv[id].err)} onInput={set(id, 'err')} onSubmit={set(id, 'err')} />
+          <Input key={`${id}-warn`} label="주황부터 (%)" value={String(lv[id].warn)} onInput={set(id, 'warn')} onSubmit={set(id, 'warn')} />
+          <Input key={`${id}-err`} label="빨강부터 (%)" value={String(lv[id].err)} onInput={set(id, 'err')} onSubmit={set(id, 'err')} />
         </Box>
       </Box>
     )
     return (
-      <Box flexDirection="column">
-        {row('five', '5시간 세션', 'ac')}
-        {row('week', '주간 세션', 'ac')}
-        {row('ctx', '컨텍스트', 'ok')}
-        <Button key="reset" variant="secondary" onPress={() => setLevels($, () => DEFAULT_LEVELS)}>
-          <Text>기본값으로 (40% / 80%)</Text>
-        </Button>
+      <Box flexDirection="column" gap={2} padding={1} width="100%" minHeight="100%">
+        {row('five', '5시간 세션', '5시간마다 리셋', 'ac')}
+        {row('week', '주간 세션', '일주일마다 리셋', 'ac')}
+        {row('ctx', '컨텍스트', '압축 기준 대비', 'ok')}
+        <Box flexGrow={1} />
+        {/* 기본값 되돌리기는 창 맨 오른쪽 아래 */}
+        <Box width="100%" justifyContent="flex-end">
+          <Button key="reset" variant="secondary" onPress={() => setLevels($, () => DEFAULT_LEVELS)}>
+            <Text>기본값으로 되돌리기 (40% / 80%)</Text>
+          </Button>
+        </Box>
       </Box>
     )
   })
