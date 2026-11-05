@@ -46,11 +46,11 @@ const svgBand = (cols: { name: string; n?: number; note: string; c: string; v?: 
 }
 const tone = (n = 0, base = 'ac') => (n >= 95 ? 'er' : n >= 80 ? 'wn' : base)
 
-const k = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}k`)
+const k = (n: number) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${+(n / 1000).toFixed(1)}k`)
 const ctxText = (u: Usage) =>
   u.contextTokens === undefined || u.contextMax === undefined
     ? pct(u.contextPercent)
-    : `${k(u.contextTokens)}/${k(u.contextMax)} ${pct(u.contextPercent)}`
+    : `${k(u.contextTokens)} / ${k(u.contextMax)}`
 
 // 분모는 모델 최대 창이 아니라 압축 기준 창(사용자가 400k 등으로 줄였으면 그 값).
 // summary 분해는 로컬 추정이라 API 호출 없음. 모델 창이 바뀔 때만 다시 읽음
@@ -175,14 +175,14 @@ export const register: Register = on => {
       const svg = svgBand([
         { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five) },
         { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week) },
-        { name: '컨텍스트', n: ctx, note: hot0 ? '압축 권장' : '', c: hot0 ? 'wn' : tone(ctx, 'ok'), v: ctxText(u), W: 228 },
+        { name: '컨텍스트', n: ctx, note: hot0 ? '압축 권장' : '', c: hot0 ? 'wn' : tone(ctx, 'ok'), v: ctxText(u), W: 200 },
       ])
       return (
         <Box justifyContent="space-between" alignItems="center">
           <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}, 컨텍스트 ${ctxText(u)}`} />
           <Box alignItems="center" gap={1}>
-            <Button key="compact" variant={hot0 ? 'primary' : 'secondary'} onPress={() => $.session.compact()}>
-              <Text color={hot0 ? 'warning' : undefined}>세션 압축</Text>
+            <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
+              <Text>세션 압축</Text>
             </Button>
             <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
           </Box>
@@ -203,8 +203,8 @@ export const register: Register = on => {
         {col('5시간', five, reset(u.rateLimits, 'five_hour'))}
         {col('주간', week, reset(u.rateLimits, 'seven_day'))}
         {col('컨텍스트', ctx, hot ? '압축 권장' : '여유', ctxText(u))}
-        <Button key="compact" variant={hot ? 'primary' : 'secondary'} onPress={() => $.session.compact()}>
-          <Text color={hot ? 'warning' : undefined}>세션 압축</Text>
+        <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
+          <Text>세션 압축</Text>
         </Button>
         <Text> </Text>
         <Button key="close" label="✕" dimColor onPress={() => setOn($, false)} />
