@@ -5,6 +5,7 @@ import type { Level, Levels, Limit, Usage } from '../types'
 
 const usage = atom({ plugin: 'usage-band', key: 'usage' } as const, null)
 const isOn = atom({ plugin: 'usage-band', key: 'isOn' } as const, true)
+const settingsOpen = atom({ plugin: 'usage-band', key: 'settingsOpen' } as const, false)
 
 // 막대 색 기준. 기본은 셋 다 40% 주황, 80% 빨강. 설정 창에서 바꾸면 store에 남아 다음 세션에도 유지
 const DEFAULT_LEVELS: Levels = { five: { warn: 40, err: 80 }, week: { warn: 40, err: 80 }, ctx: { warn: 40, err: 80 } }
@@ -201,6 +202,7 @@ export const register: Register = on => {
     const week = u.rateLimits.find(r => r.kind === 'seven_day')?.percentUsed
     const ctx = u.contextPercent
     const lv = await read($, levels)
+    const open = await read($, settingsOpen)
     if (Svg) {
       const svg = svgBand([
         { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five, lv.five) },
@@ -230,14 +232,14 @@ export const register: Register = on => {
               <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
                 <Text>압축</Text>
               </Button>
-              {/* 톱니에 마우스를 올리면 아래에 색 기준 줄이 펼쳐짐. 그 줄 위에 있는 동안은 계속 열림 */}
+              {/* 톱니에 마우스를 올리면 색 기준 줄이 잠깐 펼쳐지고, 누르면 다시 누를 때까지 열려 있음 */}
               <Box hover={{ scope: HOVER }}>
-                <Text dimColor>⚙</Text>
+                <Button key="settings" label="⚙" dimColor onPress={() => update($, settingsOpen, v => !v)} />
               </Box>
               <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
             </Box>
           </Box>
-          <Box display="none" hover={{ scope: HOVER, display: 'flex' }} flexDirection="column" marginTop={1}>
+          <Box display={open ? 'flex' : 'none'} hover={open ? { scope: HOVER } : { scope: HOVER, display: 'flex' }} flexDirection="column" marginTop={1}>
             {row('five', '5시간 세션', 'ac')}
             {row('week', '주간 세션', 'ac')}
             {row('ctx', '컨텍스트', 'ok')}
@@ -267,9 +269,7 @@ export const register: Register = on => {
           <Text>압축</Text>
         </Button>
         <Text> </Text>
-        <Button key="settings" variant="secondary" onPress={() => openSettings($)}>
-          <Text>⚙</Text>
-        </Button>
+        <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
         <Text> </Text>
         <Button key="close" label="✕" dimColor onPress={() => setOn($, false)} />
       </Box>
