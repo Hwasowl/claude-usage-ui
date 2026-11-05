@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionContextUsage } from 'claude-code'
+import type { EngineInterface, Register, SessionContextBreakdown, SessionContextUsage } from 'claude-code'
 
 import type { Level, Levels, Limit, Usage } from '../types'
 
@@ -20,10 +20,13 @@ const setLevels = async ($: EngineInterface, fn: (l: Levels) => Levels) => {
 }
 
 const SETTINGS = 'usage-band-settings'
-const openSettings = ($: EngineInterface) =>
-  $.ui.open({ id: SETTINGS, title: '사용량 배너 색 기준', focus: true, closeOnEscape: true })
-const DETAIL = 'usage-band-context'
-const openDetail = ($: EngineInterface) => $.ui.open({ id: DETAIL, title: '컨텍스트 상세', closeOnEscape: true })
+// 톱니를 다시 누르면 닫힘. 열림 여부는 엔진 기록(panes)으로 확인해 Esc로 닫은 경우도 맞게 동작
+const openSettings = async ($: EngineInterface) => {
+  const open = (await $.ui.panes()).some(p => p.id === SETTINGS)
+  if (open) await $.ui.close({ id: SETTINGS })
+  else await $.ui.open({ id: SETTINGS, title: '사용량 배너 색 기준', focus: true, closeOnEscape: true })
+}
+const HOVER_CTX = 'usage-band-ctx' // 컨텍스트 칸과 그 아래 상세 목록을 묶는 호버 그룹
 
 const pct = (n?: number) => (n === undefined ? '-' : `${Math.round(n)}%`)
 
@@ -96,9 +99,12 @@ const ctxText = (u: Usage) =>
 // 분모는 모델 최대 창이 아니라 압축 기준 창(사용자가 400k 등으로 줄였으면 그 값).
 // summary 분해는 로컬 추정이라 API 호출 없음. 모델 창이 바뀔 때만 다시 읽음
 let maxFor: { window: number; max: number } | undefined
+// 호버 상세용: 마지막으로 읽은 항목별 분해. 그리는 중엔 계산을 새로 하지 않고 이걸 보여줌(답변마다 갱신)
+let lastBreakdown: SessionContextBreakdown | undefined
 const ctxOf = async ($: EngineInterface, c: SessionContextUsage) => {
   if (maxFor?.window !== c.window) {
     const b = await $.session.usage({ breakdown: 'summary' }).then(r => r.context.breakdown, () => undefined)
+    if (b) lastBreakdown = b
     // 세션이 아직 안 붙어 분해가 없으면 캐시하지 않고 다음에 다시 시도
     if (b?.rawMaxTokens) maxFor = { window: c.window, max: b.rawMaxTokens }
   }
@@ -208,19 +214,52 @@ export const register: Register = on => {
         { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week, lv.week) },
       ])
       const ctxSvg = svgFill({ name: '컨텍스트', n: ctx, note: ctxText(u), c: tone(ctx, lv.ctx, 'ok') })
+      const b = lastBreakdown
+      const max = b?.rawMaxTokens || 1
+      const line = (key: string, name: string, colr: string | undefined, tokens: string, part: string, dim = false) => (
+        <Box key={key} gap={2}>
+          <Box width={2}><Text color={colr}>{colr ? '■' : ' '}</Text></Box>
+          <Box flexGrow={1}><Text dimColor={dim}>{name}</Text></Box>
+          <Box width={9} justifyContent="flex-end"><Text dimColor={dim}>{tokens}</Text></Box>
+          <Box width={7} justifyContent="flex-end"><Text dimColor>{part}</Text></Box>
+        </Box>
+      )
       return (
-        <Box alignItems="center" gap={3}>
-          <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
-          <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0}>
-            <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
+        <Box flexDirection="column">
+          <Box alignItems="center" gap={3}>
+            <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
+            {/* 컨텍스트 칸에 마우스를 올리면 아래에 항목별 상세가 펼쳐짐. 상세 위에 있는 동안은 계속 열림 */}
+            <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} hover={{ scope: HOVER_CTX }}>
+              <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
+            </Box>
+            <Box alignItems="center" gap={1}>
+              <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
+                <Text>압축</Text>
+              </Button>
+              <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
+              <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
+            </Box>
           </Box>
-          <Button key="detail" label="›" dimColor onPress={() => openDetail($)} />
-          <Box alignItems="center" gap={1}>
-            <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
-              <Text>압축</Text>
-            </Button>
-            <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
-            <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
+          <Box display="none" hover={{ scope: HOVER_CTX, display: 'flex' }} flexDirection="column" gap={1} marginTop={1}>
+            {b ? (
+              <Box flexDirection="column" gap={1}>
+                <Box justifyContent="space-between">
+                  <Text weight="semibold">{Math.round(b.percentage)}% 사용됨</Text>
+                  <Text>{k(b.totalTokens)} / {k(max)}</Text>
+                </Box>
+                <Box flexDirection="column">
+                  {b.categories.map((c, i) =>
+                    line(`c${i}`, c.name, c.color, k(c.tokens), c.isDeferred ? '—' : `${((c.tokens / max) * 100).toFixed(1)}%`, c.isDeferred),
+                  )}
+                </Box>
+                <Box flexDirection="column">
+                  {line('mcp', 'MCP 도구', undefined, String(b.mcpTools.length), '', true)}
+                  {line('mem', '메모리 파일', undefined, String(b.memoryFiles.length), '', true)}
+                </Box>
+              </Box>
+            ) : (
+              <Text dimColor>메시지를 한 번 보내면 항목별 사용량이 나옵니다.</Text>
+            )}
           </Box>
         </Box>
       )
@@ -238,8 +277,6 @@ export const register: Register = on => {
         {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
         {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
         {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
-        <Button key="detail" label="›" dimColor onPress={() => openDetail($)} />
-        <Text> </Text>
         <Button key="compact" variant="secondary" onPress={() => $.session.compact()}>
           <Text>압축</Text>
         </Button>
@@ -281,38 +318,4 @@ export const register: Register = on => {
     )
   })
 
-  // 컨텍스트 상세: /context 와 같은 항목별 사용량. summary 분해는 로컬 추정이라 API 호출 없음
-  on('ui.render', { component: 'Pane', requestId: DETAIL }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e) as any
-    await read($, usage) // 답변이 올 때마다 다시 그리도록 구독
-    const b = await $.session.usage({ breakdown: 'summary' }).then(r => r.context.breakdown, () => undefined)
-    if (!b) return <Text dimColor>아직 컨텍스트 정보가 없습니다. 메시지를 한 번 보낸 뒤 다시 열어 주세요.</Text>
-    const max = b.rawMaxTokens || 1
-    const share = (n: number) => `${((n / max) * 100).toFixed(1)}%`
-    const line = (key: string, name: string, color: string | undefined, tokens: string, part: string, dim = false) => (
-      <Box key={key} gap={2}>
-        <Box width={2}><Text color={color}>{color ? '■' : ' '}</Text></Box>
-        <Box flexGrow={1}><Text dimColor={dim}>{name}</Text></Box>
-        <Box width={9} justifyContent="flex-end"><Text dimColor={dim}>{tokens}</Text></Box>
-        <Box width={7} justifyContent="flex-end"><Text dimColor>{part}</Text></Box>
-      </Box>
-    )
-    return (
-      <Box flexDirection="column" gap={1}>
-        <Box justifyContent="space-between">
-          <Text weight="semibold">{Math.round(b.percentage)}% 사용됨</Text>
-          <Text>{k(b.totalTokens)} / {k(max)}</Text>
-        </Box>
-        <Box flexDirection="column">
-          {b.categories.map((c, i) =>
-            line(`c${i}`, c.name, c.color, k(c.tokens), c.isDeferred ? '—' : share(c.tokens), c.isDeferred),
-          )}
-        </Box>
-        <Box flexDirection="column">
-          {line('mcp', 'MCP 도구', undefined, String(b.mcpTools.length), '', true)}
-          {line('mem', '메모리 파일', undefined, String(b.memoryFiles.length), '', true)}
-        </Box>
-      </Box>
-    )
-  })
 }
