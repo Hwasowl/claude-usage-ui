@@ -1,11 +1,36 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextBreakdown, SessionContextUsage } from 'claude-code'
 
-import type { Level, Levels, Limit, Usage } from '../types'
+import type { Bg, Level, Levels, Limit, Usage } from '../types'
 
 const usage = atom({ plugin: 'usage-band', key: 'usage' } as const, null)
 const isOn = atom({ plugin: 'usage-band', key: 'isOn' } as const, true)
 const ctxOpen = atom({ plugin: 'usage-band', key: 'ctxOpen' } as const, false) // 컨텍스트 상세 펼침 여부
+const agents = atom({ plugin: 'usage-band', key: 'agents' } as const, [] as Bg[]) // 돌고 있는 서브에이전트
+const bgOpen = atom({ plugin: 'usage-band', key: 'bgOpen' } as const, false) // 서브에이전트 목록 펼침
+
+// 끝나지 않은 서브에이전트만 보여줌
+const ACTIVE = ['pending', 'running', 'waiting']
+const STATUS_KO: Record<string, string> = { pending: '대기', running: '실행 중', waiting: '기다리는 중' }
+let poll: { cancel: () => void } | undefined
+// 목록을 다시 읽어 상태에 넣음. 하나라도 돌고 있으면 2초마다 다시 읽고, 다 끝나면 멈춤
+// (끝남을 알려주는 이벤트가 따로 없어서 도는 동안만 짧게 확인)
+const refreshAgents = async ($: EngineInterface) => {
+  const list = await $.agent.list().catch(() => [])
+  const v: Bg[] = list
+    .filter(a => ACTIVE.includes(a.status))
+    .map(a => ({ id: a.id, description: a.description || a.name || a.type, type: a.type, status: a.status }))
+  const prev = await read($, agents)
+  if (JSON.stringify(prev) !== JSON.stringify(v)) await update($, agents, () => v)
+  // 없다가 생기면 목록을 자동으로 펼치고, 다 끝나면 접음. 그 사이엔 로봇 버튼으로 직접 접고 폄
+  if (!prev.length && v.length) await update($, bgOpen, () => true)
+  if (prev.length && !v.length) await update($, bgOpen, () => false)
+  if (v.length && !poll) poll = $.clock.every(2000, () => void refreshAgents($))
+  if (!v.length && poll) {
+    poll.cancel()
+    poll = undefined
+  }
+}
 
 // 막대 색 기준. 기본은 셋 다 40% 주황, 80% 빨강. 설정 창에서 바꾸면 store에 남아 다음 세션에도 유지
 const DEFAULT_LEVELS: Levels = { five: { warn: 40, err: 80 }, week: { warn: 40, err: 80 }, ctx: { warn: 40, err: 80 } }
@@ -50,7 +75,7 @@ const STYLE = `<style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{f
 @media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>`
 type Col = { name: string; n?: number; note: string; c: string }
 const svgBand = (cols: Col[]) => {
-  const W = 185
+  const W = 164
   const g = cols
     .map((c, i) => {
       const x = i * (W + 24)
@@ -83,10 +108,23 @@ ${STYLE}<text x="40" y="11" class="v" text-anchor="end">${v}</text></svg>`
 // 말풍선(isInteractive + title)은 시도했으나 배너에서 그림 칸이 크게 부풀어 레이아웃이 깨져 뺌
 const svgBar = (n: number | undefined, c: string) => {
   const w = Math.max(0, Math.min(100, n ?? 0))
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="6">
-${STYLE}<rect x="0" y="0" width="100%" height="5" rx="2.5" class="t"/>
-<rect x="0" y="0" width="${w}%" height="5" rx="2.5" class="${c}"/></svg>`
+  // 위 3px 띄움: 글자줄(14px)과 합쳐 5시간/주간 칸처럼 글자 아래 17px 지점에 막대가 오게
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="8">
+${STYLE}<rect x="0" y="3" width="100%" height="5" rx="2.5" class="t"/>
+<rect x="0" y="3" width="${w}%" height="5" rx="2.5" class="${c}"/></svg>`
 }
+// 앱 알림 동그라미: 빨간 원에 흰 숫자(10 이상은 9+)
+const svgBadge = (n: number) => {
+  const t = n > 9 ? '9+' : String(n)
+  const w = t.length > 1 ? 18 : 14
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="14" viewBox="0 0 ${w} 14">
+<rect x="0" y="0" width="${w}" height="14" rx="7" fill="#e5484d"/>
+<text x="${w / 2}" y="10.5" text-anchor="middle" font-family="system-ui,sans-serif" font-size="9.5" font-weight="700" fill="#fff">${t}</text></svg>`
+}
+// 상세 항목 순서: 실제로 쓰는 항목을 많은 순으로 먼저, 그다음 나중에 불러오는 항목, 압축 여유분, 빈 공간
+const KIND_ORDER = { used: 0, deferred: 1, buffer: 2, free: 3 } as const
+const byUse = (cs: readonly SessionContextBreakdown['categories'][number][]) =>
+  [...cs].sort((a, b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9) || b.tokens - a.tokens)
 const tone = (n = 0, l: Level, base = 'ac') => (n >= l.err ? 'er' : n >= l.warn ? 'wn' : base)
 // 설정 카드의 눈금: 둥근 막대를 기본/주황/빨강 구간으로 칠하고, 기준 위치에 값 표시, 아래 10% 눈금과 0/50/100
 const svgScale = (l: Level, base: string) => {
@@ -179,16 +217,6 @@ const storedLimits = async ($: EngineInterface): Promise<Limit[] | undefined> =>
   return Array.isArray(saved) ? expire(saved as Limit[]) : undefined
 }
 
-// 망치 버튼: /compact 를 직접 입력한 것과 같은 경로로 실행(진행 표시도 똑같이 나옴).
-// 응답이 진행 중이면 엔진이 거부하므로, 조용히 실패하지 않게 안내를 띄움
-const compactNow = async ($: EngineInterface) => {
-  try {
-    await $.command.run({ command: 'compact' })
-  } catch (err) {
-    $.ui.toast(`압축하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`)
-  }
-}
-
 const setOn = async ($: EngineInterface, on: boolean) => {
   await update($, isOn, () => on)
   await $.store.set('isOn', on)
@@ -252,8 +280,20 @@ export const register: Register = on => {
     return r
   })
 
+  // 서브에이전트가 생기거나 상태가 바뀌는 때마다 목록을 다시 읽음
+  on('tool.call', { tool: 'Agent' }, async ($, e, next) => {
+    const r = await next(e)
+    await refreshAgents($)
+    return r
+  })
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId !== undefined) await refreshAgents($)
+    return next(e)
+  })
+
   on('session.measure', async ($, e, next) => {
     compacted = undefined
+    await refreshAgents($)
     // 다른 경로(설정 파일 직접 수정 등)로 바뀐 것도 답변이 올 때마다 다시 읽어 맞춤
     maxFor = undefined
     const u = await withLast($, { ...(await ctxOf($, e.context)), rateLimits: e.rateLimits })
@@ -277,6 +317,34 @@ export const register: Register = on => {
     const week = u.rateLimits.find(r => r.kind === 'seven_day')?.percentUsed
     const ctx = u.contextPercent
     const lv = await read($, levels)
+    const bg = await read($, agents)
+    const bgShown = await read($, bgOpen)
+    // 로봇 버튼은 항상 보임. 돌고 있는 서브에이전트가 있으면 앱 알림처럼 오른쪽 위에 빨간 동그라미 숫자.
+    // 버튼 안에는 그림을 못 넣어서, 버튼을 감싼 칸 위에 동그라미를 겹쳐 그림(누르는 건 그대로 버튼)
+    const robot = (
+      <Box key="agentswrap" position="relative">
+        <Button key="agents" label="🤖︎" dimColor onPress={() => update($, bgOpen, v => !v)} />
+        {bg.length > 0 && Svg && (
+          <Box position="absolute" top={0} right={0}>
+            <Svg key="badge" source={svgBadge(bg.length)} alt={`서브에이전트 ${bg.length}개`} />
+          </Box>
+        )}
+      </Box>
+    )
+    const dot = (st: string) => (st === 'running' ? 'success' : st === 'waiting' ? 'warning' : undefined)
+    const bgList = (
+      <Box key="bglist" display={bgShown ? 'flex' : 'none'} flexDirection="column" marginTop={1}>
+        <Text dimColor>{bg.length ? `백그라운드 서브에이전트 ${bg.length}개` : '돌고 있는 서브에이전트가 없습니다.'}</Text>
+        {bg.map(a => (
+          <Box key={`bg-${a.id}`} gap={2}>
+            <Box width={2}><Text color={dot(a.status)} dimColor={!dot(a.status)}>●</Text></Box>
+            <Box flexGrow={1} flexShrink={1} minWidth={0}><Text wrap="truncate">{a.description}</Text></Box>
+            <Text dimColor>{a.type}</Text>
+            <Box width={10} justifyContent="flex-end"><Text dimColor>{STATUS_KO[a.status] ?? a.status}</Text></Box>
+          </Box>
+        ))}
+      </Box>
+    )
     if (Svg) {
       const svg = svgBand([
         { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five, lv.five) },
@@ -295,21 +363,24 @@ export const register: Register = on => {
         </Box>
       )
       return (
-        <Box flexDirection="column">
+        <Box flexDirection="column" paddingX="md">{/* 양옆 여백: 아래 입력창의 + 버튼과 왼쪽 시작을 맞춤 */}
           <Box alignItems="center" gap={3}>
             <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
             {/* 사용량 글자(예: 292.3k / 1M) 바로 오른쪽 작은 버튼: 누르면 아래에 항목별 상세가 펼쳐지고 다시 누르면 접힘 */}
-            <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} flexDirection="column">
-              <Box alignItems="center">
-                <Svg key="ctxlabel" source={svgLabel('컨텍스트', ctxText(u))} alt={`컨텍스트 ${ctxText(u)}`} />
-                <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
-                <Box flexGrow={1} />
-                <Svg key="ctxpct" source={svgValue(pct(ctx))} alt={pct(ctx)} />
+            {/* 컨텍스트 칸: 글자/퍼센트/막대는 왼쪽 세로 묶음, 상세 펼침 버튼은 그 오른쪽에 두 줄 높이 가운데로 따로 둬서 막대를 가리지 않음 */}
+            <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} alignItems="center" gap={1}>
+              <Box flexGrow={1} flexShrink={1} minWidth={0} flexDirection="column">
+                <Box alignItems="center">
+                  <Svg key="ctxlabel" source={svgLabel('컨텍스트', ctxText(u))} alt={`컨텍스트 ${ctxText(u)}`} />
+                  <Box flexGrow={1} />
+                  <Svg key="ctxpct" source={svgValue(pct(ctx))} alt={pct(ctx)} />
+                </Box>
+                <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
               </Box>
-              <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
+              <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
             </Box>
             <Box alignItems="center" gap={1}>
-              <Button key="compact" label="⚒︎" dimColor onPress={() => compactNow($)} />
+              {robot}
               <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
               <Button key="close" label="✕" dimColor role="dismiss" onPress={() => setOn($, false)} />
             </Box>
@@ -322,7 +393,7 @@ export const register: Register = on => {
                   <Text>{k(b.totalTokens)} / {k(max)}</Text>
                 </Box>
                 <Box flexDirection="column">
-                  {b.categories.map((c, i) =>
+                  {byUse(b.categories).map((c, i) =>
                     line(`c${i}`, c.name, c.color, k(c.tokens), c.isDeferred ? '—' : `${((c.tokens / max) * 100).toFixed(1)}%`, c.isDeferred),
                   )}
                 </Box>
@@ -335,6 +406,7 @@ export const register: Register = on => {
               <Text dimColor>메시지를 한 번 보내면 항목별 사용량이 나옵니다.</Text>
             )}
           </Box>
+          {bgList}
         </Box>
       )
     }
@@ -347,15 +419,18 @@ export const register: Register = on => {
       </Box>
     )
     return (
-      <Box>
-        {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
-        {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
-        {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
-        <Button key="compact" label="⚒︎" dimColor onPress={() => compactNow($)} />
-        <Text> </Text>
-        <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
-        <Text> </Text>
-        <Button key="close" label="✕" dimColor onPress={() => setOn($, false)} />
+      <Box flexDirection="column">
+        <Box>
+          {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
+          {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
+          {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
+          <Button key="agents" label={bg.length ? `🤖︎ ${bg.length}` : '🤖︎'} dimColor onPress={() => update($, bgOpen, v => !v)} />
+          <Text> </Text>
+          <Button key="settings" label="⚙" dimColor onPress={() => openSettings($)} />
+          <Text> </Text>
+          <Button key="close" label="✕" dimColor onPress={() => setOn($, false)} />
+        </Box>
+        {bgList}
       </Box>
     )
   })
