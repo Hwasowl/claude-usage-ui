@@ -1,14 +1,13 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextBreakdown, SessionContextUsage } from 'claude-code'
 
-import type { Bg, Bump, Level, Levels, Limit, Usage } from '../types'
+import type { Bg, Level, Levels, Limit, Usage } from '../types'
 
 const usage = atom({ plugin: 'usage-band', key: 'usage' } as const, null)
 const isOn = atom({ plugin: 'usage-band', key: 'isOn' } as const, true)
 const ctxOpen = atom({ plugin: 'usage-band', key: 'ctxOpen' } as const, false) // 컨텍스트 상세 펼침 여부
 const agents = atom({ plugin: 'usage-band', key: 'agents' } as const, [] as Bg[]) // 돌고 있는 서브에이전트
 const bgOpen = atom({ plugin: 'usage-band', key: 'bgOpen' } as const, false) // 서브에이전트 목록 펼침
-const bump = atom({ plugin: 'usage-band', key: 'bump' } as const, null as Bump | null) // 방금 늘어난 %p(3초 뒤 지움)
 
 // 끝나지 않은 서브에이전트만 보여줌
 const ACTIVE = ['pending', 'running', 'waiting']
@@ -55,18 +54,8 @@ const reset = (list: Limit[], kind: string) => {
 // 시안 A 그대로의 그림. 라이트/다크는 시스템 설정을 따름(prefers-color-scheme)
 const STYLE = `<style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{font-size:12px;fill:#5f5e5a}.v{font-size:12px;font-weight:500;fill:#141413}.m{font-size:11px;fill:#8a8985}
 .t{fill:rgba(0,0,0,.1)}.ok{fill:#3b8f3b}.ac{fill:#2c84db}.wn{fill:#d99a00}.er{fill:#d33f3f}
-.up{fill:#d97a00}.u{font-size:11px;font-weight:700;fill:#d97a00;animation:pop .35s ease-out}.fl{animation:fl .5s 3}
-@keyframes pop{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}@keyframes fl{50%{opacity:.25}}
-@media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}.up{fill:#ffb648}.u{fill:#ffb648}}</style>`
-// 늘어난 칸: 막대에서 새로 찬 구간을 주황으로 깜빡이고, 퍼센트 바로 왼쪽에 +N% 를 띄움
-const upChip = (xEnd: number, d?: number) => (d ? `<text x="${xEnd}" y="11" class="u" text-anchor="end">+${d}%</text>` : '')
-const upSeg = (x: number, full: number, n?: number, d?: number) => {
-  if (!d || n === undefined) return ''
-  const to = Math.max(0, Math.min(100, n))
-  const from = Math.max(0, to - d)
-  return `<rect x="${x + (from / 100) * full}" y="17" width="${Math.max(2, ((to - from) / 100) * full)}" height="5" class="up fl"/>`
-}
-type Col = { name: string; n?: number; note: string; c: string; d?: number }
+@media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>`
+type Col = { name: string; n?: number; note: string; c: string }
 const svgBand = (cols: Col[]) => {
   const L = 5 // 배너 왼쪽 끝에서 5px 띄움
   const W = 180
@@ -77,8 +66,7 @@ const svgBand = (cols: Col[]) => {
       return `<text x="${x}" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}</tspan></text>
 <text x="${x + W}" y="11" class="v" text-anchor="end">${pct(c.n)}</text>
 <rect x="${x}" y="17" width="${W}" height="5" rx="2.5" class="t"/>
-<rect x="${x}" y="17" width="${Math.max(w, c.n ? 5 : 0)}" height="5" rx="2.5" class="${c.c}"/>
-${upSeg(x, W, c.n, c.d)}${upChip(x + W - 32, c.d)}`
+<rect x="${x}" y="17" width="${Math.max(w, c.n ? 5 : 0)}" height="5" rx="2.5" class="${c.c}"/>`
     })
     .join('')
   const total = L + cols.length * (W + 24) - 24
@@ -95,23 +83,18 @@ const svgLabel = (name: string, note: string) => {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="14" viewBox="0 0 ${w} 14">
 ${STYLE}<text x="0" y="11" class="l">${name}<tspan class="m" dx="6">${note}</tspan></text></svg>`
 }
-// 늘었으면 칸을 넓혀 +N% 를 퍼센트 왼쪽에 둠. 왼쪽 글자는 따로 그린 그림이라 밀리거나 줄바꿈되지 않음
-const svgValue = (v: string, d?: number) => {
-  const w = d ? 74 : 40
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="14" viewBox="0 0 ${w} 14">
-${STYLE}${upChip(w - 32, d)}<text x="${w}" y="11" class="v" text-anchor="end">${v}</text></svg>`
-}
+const svgValue = (v: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="14" viewBox="0 0 40 14">
+${STYLE}<text x="40" y="11" class="v" text-anchor="end">${v}</text></svg>`
 // 컨텍스트 칸의 막대
 // viewBox 없이 퍼센트 길이라 남은 폭을 다 써도 모양이 안 늘어남
 // 말풍선(isInteractive + title)은 시도했으나 배너에서 그림 칸이 크게 부풀어 레이아웃이 깨져 뺌
-const svgBar = (n: number | undefined, c: string, d?: number) => {
+const svgBar = (n: number | undefined, c: string) => {
   const w = Math.max(0, Math.min(100, n ?? 0))
-  const from = Math.max(0, w - (d ?? 0))
   // 위 3px 띄움: 글자줄(14px)과 합쳐 5시간/주간 칸처럼 글자 아래 17px 지점에 막대가 오게
   return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="8">
 ${STYLE}<rect x="0" y="3" width="100%" height="5" rx="2.5" class="t"/>
-<rect x="0" y="3" width="${w}%" height="5" rx="2.5" class="${c}"/>
-${d ? `<rect x="${from}%" y="3" width="${w - from}%" height="5" class="up fl"/>` : ''}</svg>`
+<rect x="0" y="3" width="${w}%" height="5" rx="2.5" class="${c}"/></svg>`
 }
 // 상세 항목 순서: 실제로 쓰는 항목을 많은 순으로 먼저, 그다음 나중에 불러오는 항목, 압축 여유분, 빈 공간
 const KIND_ORDER = { used: 0, deferred: 1, buffer: 2, free: 3 } as const
@@ -194,30 +177,6 @@ const compactNow = async ($: EngineInterface) => {
   }
 }
 
-// 게임 상황판처럼 답변 하나로 늘어난 만큼(+N%)을 3초 동안 보여줌. 반올림한 퍼센트끼리 비교해 늘었을 때만
-let bumpTimer: { cancel: () => void } | undefined
-const rise = (a?: number, b?: number) => {
-  if (a === undefined || b === undefined) return undefined
-  const d = Math.round(b) - Math.round(a)
-  return d > 0 ? d : undefined
-}
-const limitOf = (u: Usage, kind: string) => u.rateLimits.find(r => r.kind === kind)?.percentUsed
-const setBump = async ($: EngineInterface, a: Usage | null, b: Usage) => {
-  if (!a) return
-  const v: Bump = {
-    five: rise(limitOf(a, 'five_hour'), limitOf(b, 'five_hour')),
-    week: rise(limitOf(a, 'seven_day'), limitOf(b, 'seven_day')),
-    ctx: rise(a.contextPercent, b.contextPercent),
-  }
-  if (!v.five && !v.week && !v.ctx) return
-  await update($, bump, () => v)
-  bumpTimer?.cancel()
-  bumpTimer = $.clock.after(3000, () => {
-    bumpTimer = undefined
-    void update($, bump, () => null)
-  })
-}
-
 const setOn = async ($: EngineInterface, on: boolean) => {
   await update($, isOn, () => on)
   await $.store.set('isOn', on)
@@ -296,9 +255,7 @@ export const register: Register = on => {
     // 다른 경로(설정 파일 직접 수정 등)로 바뀐 것도 답변이 올 때마다 다시 읽어 맞춤
     maxFor = undefined
     const u = await withLast($, { ...(await ctxOf($, e.context)), rateLimits: e.rateLimits })
-    const old = await read($, usage)
     await update($, usage, () => u)
-    await setBump($, old, u)
     return next(e)
   })
 
@@ -320,7 +277,6 @@ export const register: Register = on => {
     const lv = LEVELS
     const bg = await read($, agents)
     const bgShown = await read($, bgOpen)
-    const up = await read($, bump)
     const dot = (st: string) => (st === 'running' ? 'success' : st === 'waiting' ? 'warning' : undefined)
     // 서브에이전트가 돌 때만 배너 아래에 쌓임. 머리 줄의 ▾/▴로 펼치고 접음
     const bgList = bg.length ? (
@@ -346,10 +302,10 @@ export const register: Register = on => {
     ) : null
     if (Svg) {
       const svg = svgBand([
-        { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five, lv.five), d: up?.five },
-        { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week, lv.week), d: up?.week },
+        { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five, lv.five) },
+        { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week, lv.week) },
       ])
-      const ctxSvg = svgBar(ctx, tone(ctx, lv.ctx, 'ok'), up?.ctx)
+      const ctxSvg = svgBar(ctx, tone(ctx, lv.ctx, 'ok'))
       const b = lastBreakdown
       const open = await read($, ctxOpen)
       const max = b?.rawMaxTokens || 1
@@ -372,7 +328,7 @@ export const register: Register = on => {
                 <Box alignItems="center">
                   <Svg key="ctxlabel" source={svgLabel('컨텍스트', ctxText(u))} alt={`컨텍스트 ${ctxText(u)}`} />
                   <Box flexGrow={1} />
-                  <Svg key="ctxpct" source={svgValue(pct(ctx), up?.ctx)} alt={pct(ctx)} />
+                  <Svg key="ctxpct" source={svgValue(pct(ctx))} alt={pct(ctx)} />
                 </Box>
                 <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
               </Box>
