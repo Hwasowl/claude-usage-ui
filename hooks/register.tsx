@@ -13,13 +13,18 @@ const bgOpen = atom({ plugin: 'usage-band', key: 'bgOpen' } as const, false) // 
 const ACTIVE = ['pending', 'running', 'waiting']
 const STATUS_KO: Record<string, string> = { pending: '대기', running: '실행 중', waiting: '기다리는 중' }
 let poll: { cancel: () => void } | undefined
+// 백그라운드로 돌린 셸 명령(Bash/PowerShell). 엔진에 목록 API가 없어서 시작은 도구 결과의 작업 id로,
+// 끝은 완료 알림이나 TaskStop으로 직접 지움.
+// shortcut: 모듈 변수라 /reload-plugins 하면 그 전에 시작한 셸은 목록에서 빠짐, 문제되면 $.state로 옮길 것
+const shells = new Map<string, Bg>()
 // 목록을 다시 읽어 상태에 넣음. 하나라도 돌고 있으면 2초마다 다시 읽고, 다 끝나면 멈춤
 // (끝남을 알려주는 이벤트가 따로 없어서 도는 동안만 짧게 확인)
 const refreshAgents = async ($: EngineInterface) => {
   const list = await $.agent.list().catch(() => [])
   const v: Bg[] = list
     .filter(a => ACTIVE.includes(a.status))
-    .map(a => ({ id: a.id, description: a.description || a.name || a.type, type: a.type, status: a.status }))
+    .map((a): Bg => ({ id: a.id, description: a.description || a.name || a.type, type: a.type, status: a.status }))
+    .concat([...shells.values()])
   const prev = await read($, agents)
   if (JSON.stringify(prev) !== JSON.stringify(v)) await update($, agents, () => v)
   // 없다가 생기면 목록을 자동으로 펼치고, 다 끝나면 접음. 그 사이엔 목록 머리의 ▾/▴로 직접 접고 폄
@@ -30,6 +35,17 @@ const refreshAgents = async ($: EngineInterface) => {
     poll.cancel()
     poll = undefined
   }
+}
+
+// 백그라운드 셸: 결과에 작업 id가 있으면 목록에 올림(Ctrl+B로 옮긴 것도 같은 id가 옴)
+const trackShell = async ($: EngineInterface, e: any, next: (e: any) => Promise<any>) => {
+  const r = await next(e)
+  const id = r?.result?.backgroundTaskId
+  if (typeof id === 'string') {
+    shells.set(id, { id, description: e.description || e.command || id, type: 'shell', status: 'running' })
+    await refreshAgents($)
+  }
+  return r
 }
 
 // 막대 색 기준(고정): 이 % 이상이면 주황, 빨강. 5시간/주간 50/80, 컨텍스트 30/60
@@ -249,6 +265,24 @@ export const register: Register = on => {
     return next(e)
   })
 
+  on('tool.call', { tool: 'Bash' }, trackShell)
+  on('tool.call', { tool: 'PowerShell' }, trackShell)
+  on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
+    const r = await next(e)
+    const id = e.task_id ?? e.shell_id
+    if (id && shells.delete(id)) await refreshAgents($)
+    return r
+  })
+  // 끝나면 오는 완료 알림 본문에 작업 id가 들어 있음. 형식에 기대지 않고 id가 들어 있는지만 봄
+  on('prompt.submit', async ($, e, next) => {
+    if (e.origin?.kind === 'task-notification' && shells.size) {
+      let hit = false
+      for (const id of [...shells.keys()]) if (e.text.includes(id)) hit = shells.delete(id) || hit
+      if (hit) await refreshAgents($)
+    }
+    return next(e)
+  })
+
   on('session.measure', async ($, e, next) => {
     compacted = undefined
     await refreshAgents($)
@@ -282,7 +316,7 @@ export const register: Register = on => {
     const bgList = bg.length ? (
       <Box key="bglist" flexDirection="column" gap={Svg ? 'sm' : 0} marginTop={1} paddingY={Svg ? 1 : 0} paddingLeft={Svg ? 'xs' : 0}>
         <Box alignItems="center" gap={1}>
-          <Text dimColor>{`서브에이전트 ${bg.length}개`}</Text>
+          <Text dimColor>{`백그라운드 작업 ${bg.length}개`}</Text>
           <Button key="bgtoggle" label={bgShown ? '▴' : '▾'} plain dimColor onPress={() => update($, bgOpen, v => !v)} />
         </Box>
         <Box display={bgShown ? 'flex' : 'none'} flexDirection="column" gap={Svg ? 'xs' : 0}>
