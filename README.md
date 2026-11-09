@@ -8,13 +8,14 @@ Claude Code 입력창 위에 5시간/주간 사용량과 컨텍스트 사용률�
 오른쪽 끝의 세션 압축 버튼은 /compact와 같습니다.
 
 
-<img width="785" height="144" alt="image" src="https://github.com/user-attachments/assets/e1604fd4-d004-4450-b092-28f1f841b015" />
+<img width="789" height="139" alt="image" src="https://github.com/user-attachments/assets/374effa9-0393-485a-90b2-3559140fb3da" />
+
 
 
 
 ## 설치
 
-터미널 세션의 프롬프트에서:
+**터미널 세션의 프롬프트에서:**
 
 ```
 /plugin install usage-band --marketplace Hwasowl/claude-usage-ui
@@ -22,10 +23,14 @@ Claude Code 입력창 위에 5시간/주간 사용량과 컨텍스트 사용률�
 
 마켓플레이스를 추가할지 물으면 `y`를 누르고, 범위(scope)를 고르면 됩니다.
 
-셸에서:
+**셸에서:**
 
 ```
 claude plugin install usage-band --marketplace Hwasowl/claude-usage-ui
 ```
 
-데스크톱 앱(`/plugin`이 동작하지 않는 곳): 입력창 옆 + 버튼 → Plugins → Add marketplace에 `Hwasowl/claude-usage-ui` 입력 → Add plugin.
+**데스크톱 앱(`/plugin`이 동작하지 않는 곳):**
+
+```
+입력창 옆 + 버튼 → Plugins → Add marketplace에 `Hwasowl/claude-usage-ui` 입력 → Add plugin.
+```
