@@ -8,6 +8,8 @@ const isOn = atom({ plugin: 'usage-band', key: 'isOn' } as const, true)
 const ctxOpen = atom({ plugin: 'usage-band', key: 'ctxOpen' } as const, false) // 컨텍스트 상세 펼침 여부
 const agents = atom({ plugin: 'usage-band', key: 'agents' } as const, [] as Bg[]) // 돌고 있는 서브에이전트
 const bgOpen = atom({ plugin: 'usage-band', key: 'bgOpen' } as const, false) // 서브에이전트 목록 펼침
+const tick = atom({ plugin: 'usage-band', key: 'now' } as const, 0) // 실행 시간 표시용 시각, 목록이 있는 동안 1초마다 갱신
+const compactQueued = atom({ plugin: 'usage-band', key: 'compactQueued' } as const, false) // 응답이 끝나면 압축할지
 
 // 끝나지 않은 서브에이전트만 보여줌
 const ACTIVE = ['pending', 'running', 'waiting']
@@ -17,20 +19,24 @@ let poll: { cancel: () => void } | undefined
 // 끝은 완료 알림이나 TaskStop으로 직접 지움.
 // shortcut: 모듈 변수라 /reload-plugins 하면 그 전에 시작한 셸은 목록에서 빠짐, 문제되면 $.state로 옮길 것
 const shells = new Map<string, Bg>()
-// 목록을 다시 읽어 상태에 넣음. 하나라도 돌고 있으면 2초마다 다시 읽고, 다 끝나면 멈춤
+// 목록을 다시 읽어 상태에 넣음. 하나라도 돌고 있으면 1초마다 다시 읽고(실행 시간 갱신 겸), 다 끝나면 멈춤
 // (끝남을 알려주는 이벤트가 따로 없어서 도는 동안만 짧게 확인)
 const refreshAgents = async ($: EngineInterface) => {
   const list = await $.agent.list().catch(() => [])
+  const t = await $.clock.now()
+  const prev = await read($, agents)
+  // 엔진이 시작 시각을 주지 않으므로 처음 보인 시각을 이어서 씀
+  const since = (id: string) => prev.find(p => p.id === id)?.startedAt ?? t
   const v: Bg[] = list
     .filter(a => ACTIVE.includes(a.status))
-    .map((a): Bg => ({ id: a.id, description: a.description || a.name || a.type, type: a.type, status: a.status }))
+    .map((a): Bg => ({ id: a.id, description: a.description || a.name || a.type, type: a.type, status: a.status, startedAt: since(a.id) }))
     .concat([...shells.values()])
-  const prev = await read($, agents)
   if (JSON.stringify(prev) !== JSON.stringify(v)) await update($, agents, () => v)
+  if (v.length) await update($, tick, () => t)
   // 없다가 생기면 목록을 자동으로 펼치고, 다 끝나면 접음. 그 사이엔 목록 머리의 ▾/▴로 직접 접고 폄
   if (!prev.length && v.length) await update($, bgOpen, () => true)
   if (prev.length && !v.length) await update($, bgOpen, () => false)
-  if (v.length && !poll) poll = $.clock.every(2000, () => void refreshAgents($))
+  if (v.length && !poll) poll = $.clock.every(1000,() => void refreshAgents($))
   if (!v.length && poll) {
     poll.cancel()
     poll = undefined
@@ -42,7 +48,7 @@ const trackShell = async ($: EngineInterface, e: any, next: (e: any) => Promise<
   const r = await next(e)
   const id = r?.result?.backgroundTaskId
   if (typeof id === 'string') {
-    shells.set(id, { id, description: e.description || e.command || id, type: 'shell', status: 'running' })
+    shells.set(id, { id, description: e.description || e.command || id, type: 'shell', status: 'running', startedAt: await $.clock.now() })
     await refreshAgents($)
   }
   return r
@@ -50,6 +56,15 @@ const trackShell = async ($: EngineInterface, e: any, next: (e: any) => Promise<
 
 // 막대 색 기준(고정): 이 % 이상이면 주황, 빨강. 5시간/주간 50/80, 컨텍스트 30/60
 const LEVELS: Levels = { five: { warn: 50, err: 80 }, week: { warn: 50, err: 80 }, ctx: { warn: 30, err: 60 } }
+
+// 실행 시간: 12초, 3분 05초, 1시간 02분
+const elapsed = (ms: number) => {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  const p = (n: number) => String(n).padStart(2, '0')
+  if (s < 60) return `${s}초`
+  if (s < 3600) return `${Math.floor(s / 60)}분 ${p(s % 60)}초`
+  return `${Math.floor(s / 3600)}시간 ${p(Math.floor(s / 60) % 60)}분`
+}
 
 const pct = (n?: number) => (n === undefined ? '-' : `${Math.round(n)}%`)
 
@@ -183,12 +198,37 @@ const storedLimits = async ($: EngineInterface): Promise<Limit[] | undefined> =>
   return Array.isArray(saved) ? expire(saved as Limit[]) : undefined
 }
 
+// 본 대화의 응답이 진행 중인지. turn.start/turn.complete(agentId 없음)로 켜고 끔
+// shortcut: 모듈 변수라 응답 도중 /reload-plugins 하면 그 응답 동안은 진행 중인 걸 모름(누르면 바로 실행 시도), 문제되면 $.state로
+let busy = false
+// 대기 중 알림. 알림 내용을 고치거나 오래 붙잡을 API가 없어 1초짜리를 1초마다 다시 띄워 이어 붙임
+// shortcut: 순간 깜빡이거나 겹쳐 보일 수 있음, 거슬리면 $.ui.status로 바꿀 것
+let waitToast: { cancel: () => void } | undefined
+const QUEUED_TEXT = '응답이 끝나면 세션을 압축합니다.'
+const holdQueuedToast = ($: EngineInterface) => {
+  $.ui.toast(QUEUED_TEXT, { timeoutMs: 1000 })
+  waitToast ??= $.clock.every(1000, async () => {
+    if (await read($, compactQueued)) return $.ui.toast(QUEUED_TEXT, { timeoutMs: 1000 })
+    waitToast?.cancel()
+    waitToast = undefined
+  })
+}
 // 압축 버튼: /compact 를 직접 입력한 것과 같은 경로로 실행(진행 표시도 똑같이 나옴).
-// 응답이 진행 중이면 엔진이 거부하므로, 조용히 실패하지 않게 안내를 띄움
+// 응답이 진행 중이면 엔진이 거부하므로 대기열에 걸어 두고, 응답이 끝나면 실행. 대기 중에 다시 누르면 취소
 const compactNow = async ($: EngineInterface) => {
+  if (busy) {
+    const q = !(await read($, compactQueued))
+    await update($, compactQueued, () => q)
+    if (q) holdQueuedToast($)
+    else $.ui.toast('압축 대기를 취소했습니다.')
+    return
+  }
+  await update($, compactQueued, () => false)
   try {
     await $.command.run({ command: 'compact' })
   } catch (err) {
+    // 그 사이 새 응답이 시작됐으면 다시 대기열로
+    if (busy) return void (await update($, compactQueued, () => true))
     $.ui.toast(`압축하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
@@ -262,7 +302,17 @@ export const register: Register = on => {
   })
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) await refreshAgents($)
+    else busy = true
     return next(e)
+  })
+  on('turn.complete', async ($, e, next) => {
+    const r = await next(e)
+    if (e.agentId === undefined) {
+      busy = false
+      // 턴이 기다리는 훅 안에서는 명령 실행이 거부되므로 타이머로 훅 밖에서 실행
+      if (await read($, compactQueued)) $.clock.after(1, () => void compactNow($))
+    }
+    return r
   })
 
   on('tool.call', { tool: 'Bash' }, trackShell)
@@ -311,6 +361,9 @@ export const register: Register = on => {
     const lv = LEVELS
     const bg = await read($, agents)
     const bgShown = await read($, bgOpen)
+    const t = await read($, tick)
+    const queued = await read($, compactQueued)
+    const compactLabel = queued ? '압축 대기 중' : '세션 압축'
     const dot = (st: string) => (st === 'running' ? 'success' : st === 'waiting' ? 'warning' : undefined)
     // 서브에이전트가 돌 때만 배너 아래에 쌓임. 머리 줄의 ▾/▴로 펼치고 접음
     const bgList = bg.length ? (
@@ -328,6 +381,7 @@ export const register: Register = on => {
                 <Text wrap="truncate">{a.description}</Text>
               </Box>
               <Text dimColor>{a.type}</Text>
+              <Box width={9} justifyContent="flex-end"><Text dimColor>{elapsed(t - (a.startedAt ?? t))}</Text></Box>
               <Box width={10} justifyContent="flex-end"><Text dimColor>{STATUS_KO[a.status] ?? a.status}</Text></Box>
             </Box>
           ))}
@@ -368,7 +422,7 @@ export const register: Register = on => {
               </Box>
               <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
               {/* 압축 버튼을 컨텍스트 칸 안(gap 1)에 둬서 ▾ 바로 옆에 가깝게 붙임. 배너 끄기는 /cs-off */}
-              <Button key="compact" label="세션 압축" dimColor onPress={() => compactNow($)} />
+              <Button key="compact" label={compactLabel} dimColor={!queued} onPress={() => compactNow($)} />
             </Box>
           </Box>
           <Box display={open ? 'flex' : 'none'} flexDirection="column" gap={2} marginTop={1} paddingY={1} paddingLeft="xs">
@@ -410,7 +464,7 @@ export const register: Register = on => {
           {col('5시간', five, reset(u.rateLimits, 'five_hour'), lv.five)}
           {col('주간', week, reset(u.rateLimits, 'seven_day'), lv.week)}
           {col('컨텍스트', ctx, ctxText(u), lv.ctx)}
-          <Button key="compact" label="세션 압축" dimColor onPress={() => compactNow($)} />
+          <Button key="compact" label={compactLabel} dimColor={!queued} onPress={() => compactNow($)} />
         </Box>
         {bgList}
       </Box>
