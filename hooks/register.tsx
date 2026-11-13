@@ -178,30 +178,30 @@ const storedLimits = async ($: EngineInterface): Promise<Limit[] | undefined> =>
   const saved = await $.store.get('lastLimits')
   return Array.isArray(saved) ? expire(saved as Limit[]) : undefined
 }
+// 그림은 상태가 바뀔 때만 다시 그려지고 공유 저장소 읽기는 그 계기가 안 됨. 그래서 쉬고 있는 세션은
+// 다른 세션이 갱신한 5시간/주간을 못 봄. 주기적으로 저장소를 읽어 달라졌으면 상태에 넣어 다시 그리게 함
+// (리셋 시각이 지나 0%가 되는 것도 이걸로 반영)
+// 한 프로세스가 /clear 등으로 세션을 바꿔도 세션마다 따로 돌게 세션 id로 묶음
+const syncs = new Map<string, { cancel: () => void }>()
+const syncLimits = async ($: EngineInterface) => {
+  const s = await storedLimits($)
+  const cur = await read($, usage)
+  if (s && cur && JSON.stringify(s) !== JSON.stringify(cur.rateLimits)) await update($, usage, () => ({ ...cur, rateLimits: s }))
+}
+const startSync = async ($: EngineInterface) => {
+  const id = await $.session.id()
+  if (!syncs.has(id)) syncs.set(id, $.clock.every(10_000, () => void syncLimits($)))
+}
 
 // 본 대화의 응답이 진행 중인지. turn.start/turn.complete(agentId 없음)로 켜고 끔
 // shortcut: 모듈 변수라 응답 도중 /reload-plugins 하면 그 응답 동안은 진행 중인 걸 모름(누르면 바로 실행 시도), 문제되면 $.state로
 let busy = false
-// 대기 중 알림. 알림 내용을 고치거나 오래 붙잡을 API가 없어 1초짜리를 1초마다 다시 띄워 이어 붙임
-// shortcut: 순간 깜빡이거나 겹쳐 보일 수 있음, 거슬리면 $.ui.status로 바꿀 것
-let waitToast: { cancel: () => void } | undefined
-const QUEUED_TEXT = '응답이 끝나면 세션을 압축합니다.'
-const holdQueuedToast = ($: EngineInterface) => {
-  $.ui.toast(QUEUED_TEXT, { timeoutMs: 1000 })
-  waitToast ??= $.clock.every(1000, async () => {
-    if (await read($, compactQueued)) return $.ui.toast(QUEUED_TEXT, { timeoutMs: 1000 })
-    waitToast?.cancel()
-    waitToast = undefined
-  })
-}
 // 압축 버튼: /compact 를 직접 입력한 것과 같은 경로로 실행(진행 표시도 똑같이 나옴).
 // 응답이 진행 중이면 엔진이 거부하므로 대기열에 걸어 두고, 응답이 끝나면 실행. 대기 중에 다시 누르면 취소
 const compactNow = async ($: EngineInterface) => {
   if (busy) {
     const q = !(await read($, compactQueued))
     await update($, compactQueued, () => q)
-    if (q) holdQueuedToast($)
-    else $.ui.toast('압축 대기를 취소했습니다.')
     return
   }
   await update($, compactQueued, () => false)
@@ -235,6 +235,7 @@ export const register: Register = on => {
     if (typeof saved === 'boolean') await update($, isOn, () => saved)
     const u = await $.session.usage()
     { const v = await withLast($, { ...(await ctxOf($, u.context)), rateLimits: u.rateLimits }); await update($, usage, () => v) }
+    await startSync($)
     return next(e)
   })
 
@@ -326,6 +327,8 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     await ensureCommands($)
+    // session.start가 프로세스당 한 번이라, 새 세션에서는 여기서 시작
+    await startSync($)
     const saved = await read($, usage)
     if (e.props.hasSurvey || !(await read($, isOn))) return next(e)
     // 그리는 중에는 상태를 쓸 수 없어서(엔진이 거부) 읽기만 함. 컨텍스트는 그릴 때마다 지금 값을 읽어
