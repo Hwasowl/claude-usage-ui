@@ -66,3 +66,16 @@ test('백그라운드 서브에이전트 줄에 실행 시간이 나옴', async 
   expect((await ui.find({ type: 'Text', text: /^1분 05초$/ }))?.text).toBe('1분 05초')
   await ui.unmount()
 })
+
+test('창이 좁아지면 압축 버튼 글자가 줄어듦', async ($, on) => {
+  engine(on)
+  const label = async (columns: number) => {
+    const ui = await $.ui.mount({ ...BAND, viewport: { columns, rows: 30 } } as any)
+    const v = (await ui.find({ key: 'compact' }))?.props?.label
+    await ui.unmount()
+    return v
+  }
+  expect(await label(130)).toBe('세션 압축')
+  expect(await label(90)).toBe('압축')
+  expect(await label(60)).toBe('⇩')
+})

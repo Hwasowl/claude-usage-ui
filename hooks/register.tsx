@@ -86,26 +86,7 @@ const reset = (list: Limit[], kind: string) => {
 const STYLE = `<style>text{font-family:system-ui,'Malgun Gothic',sans-serif}.l{font-size:12px;fill:#5f5e5a}.v{font-size:12px;font-weight:500;fill:#141413}.m{font-size:11px;fill:#8a8985}
 .t{fill:rgba(0,0,0,.1)}.ok{fill:#3b8f3b}.ac{fill:#2c84db}.wn{fill:#d99a00}.er{fill:#d33f3f}
 @media (prefers-color-scheme:dark){.l{fill:#b0aea5}.v{fill:#faf9f5}.t{fill:rgba(255,255,255,.14)}.ok{fill:#6cc16c}.ac{fill:#5aa5f0}.wn{fill:#f0b429}.er{fill:#f06a6a}}</style>`
-type Col = { name: string; n?: number; note: string; c: string }
-const svgBand = (cols: Col[]) => {
-  const L = 5 // 배너 왼쪽 끝에서 5px 띄움
-  const W = 180
-  const g = cols
-    .map((c, i) => {
-      const x = L + i * (W + 24)
-      const w = Math.max(0, Math.min(100, c.n ?? 0)) / 100 * W
-      return `<text x="${x}" y="11" class="l">${c.name}<tspan class="m" dx="6">${c.note}</tspan></text>
-<text x="${x + W}" y="11" class="v" text-anchor="end">${pct(c.n)}</text>
-<rect x="${x}" y="17" width="${W}" height="5" rx="2.5" class="t"/>
-<rect x="${x}" y="17" width="${Math.max(w, c.n ? 5 : 0)}" height="5" rx="2.5" class="${c.c}"/>`
-    })
-    .join('')
-  const total = L + cols.length * (W + 24) - 24
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="22" viewBox="0 0 ${total} 22">
-${STYLE}${g}</svg>`
-}
-// 컨텍스트 칸 윗줄 글자. 5시간/주간 칸과 같은 글꼴, 간격(dx=6)으로 그리고, 버튼을 바로 옆에 붙이려고
-// 글자 길이만큼만 폭을 잡음(한글 12px, 그 외 6.5px 정도로 어림)
+// 칸 윗줄 글자(이름 + 작은 설명). 글자 길이만큼만 폭을 잡음(한글 12px, 그 외 6.5px 정도로 어림)
 const textW = (t: string, ko: number, en: number) =>
   [...t].reduce((w, ch) => w + (/[가-힣]/.test(ch) ? ko : /[ ./]/.test(ch) ? en * 0.6 : /[MW]/.test(ch) ? en * 1.6 : en), 0)
 const svgLabel = (name: string, note: string) => {
@@ -117,7 +98,7 @@ ${STYLE}<text x="0" y="11" class="l">${name}<tspan class="m" dx="6">${note}</tsp
 const svgValue = (v: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="14" viewBox="0 0 40 14">
 ${STYLE}<text x="40" y="11" class="v" text-anchor="end">${v}</text></svg>`
-// 컨텍스트 칸의 막대
+// 칸 막대
 // viewBox 없이 퍼센트 길이라 남은 폭을 다 써도 모양이 안 늘어남
 // 말풍선(isInteractive + title)은 시도했으나 배너에서 그림 칸이 크게 부풀어 레이아웃이 깨져 뺌
 const svgBar = (n: number | undefined, c: string) => {
@@ -363,7 +344,9 @@ export const register: Register = on => {
     const bgShown = await read($, bgOpen)
     const t = await read($, tick)
     const queued = await read($, compactQueued)
-    const compactLabel = queued ? '압축 대기 중' : '세션 압축'
+    // 창 폭(글자 칸 수)에 따라 버튼 글자를 줄임: 넓으면 '세션 압축', 좁으면 '압축', 더 좁으면 기호만
+    const cols = e.viewport?.columns ?? 120
+    const compactLabel = cols >= 110 ? (queued ? '압축 대기 중' : '세션 압축') : cols >= 80 ? (queued ? '대기 중' : '압축') : queued ? '⏳' : '⇩'
     const dot = (st: string) => (st === 'running' ? 'success' : st === 'waiting' ? 'warning' : undefined)
     // 서브에이전트가 돌 때만 배너 아래에 쌓임. 머리 줄의 ▾/▴로 펼치고 접음
     const bgList = bg.length ? (
@@ -389,11 +372,17 @@ export const register: Register = on => {
       </Box>
     ) : null
     if (Svg) {
-      const svg = svgBand([
-        { name: '5시간', n: five, note: reset(u.rateLimits, 'five_hour'), c: tone(five, lv.five) },
-        { name: '주간', n: week, note: reset(u.rateLimits, 'seven_day'), c: tone(week, lv.week) },
-      ])
-      const ctxSvg = svgBar(ctx, tone(ctx, lv.ctx, 'ok'))
+      // 세 칸 모두 같은 구조(윗줄 글자/퍼센트, 아랫줄 막대)에 폭 0에서 똑같이 늘어나게 해서 창이 좁아도 고르게 줄어듦
+      const cell = (key: string, name: string, note: string, n: number | undefined, cls: string) => (
+        <Box key={key} width={0} flexGrow={1} flexShrink={1} minWidth={0} flexDirection="column">
+          <Box alignItems="center" overflow="hidden">
+            <Svg key={`${key}label`} source={svgLabel(name, note)} alt={`${name} ${note}`} />
+            <Box flexGrow={1} />
+            <Svg key={`${key}pct`} source={svgValue(pct(n))} alt={pct(n)} />
+          </Box>
+          <Svg key={`${key}band`} source={svgBar(n, cls)} alt={`${name} ${pct(n)}`} />
+        </Box>
+      )
       const b = lastBreakdown
       const open = await read($, ctxOpen)
       const max = b?.rawMaxTokens || 1
@@ -408,20 +397,12 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           <Box alignItems="center" gap={3}>
-            <Svg key="band" source={svg} alt={`5시간 ${pct(five)}, 주간 ${pct(week)}`} />
-            {/* 사용량 글자(예: 292.3k / 1M) 바로 오른쪽 작은 버튼: 누르면 아래에 항목별 상세가 펼쳐지고 다시 누르면 접힘 */}
-            {/* 컨텍스트 칸: 글자/퍼센트/막대는 왼쪽 세로 묶음, 상세 펼침 버튼은 그 오른쪽에 두 줄 높이 가운데로 따로 둬서 막대를 가리지 않음 */}
-            <Box key="ctx" flexGrow={1} flexShrink={1} minWidth={0} alignItems="center" gap={1}>
-              <Box flexGrow={1} flexShrink={1} minWidth={0} flexDirection="column">
-                <Box alignItems="center">
-                  <Svg key="ctxlabel" source={svgLabel('컨텍스트', ctxText(u))} alt={`컨텍스트 ${ctxText(u)}`} />
-                  <Box flexGrow={1} />
-                  <Svg key="ctxpct" source={svgValue(pct(ctx))} alt={pct(ctx)} />
-                </Box>
-                <Svg key="ctxband" source={ctxSvg} alt={`컨텍스트 ${ctxText(u)} ${pct(ctx)}`} />
-              </Box>
+            {cell('five', '5시간', reset(u.rateLimits, 'five_hour'), five, tone(five, lv.five))}
+            {cell('week', '주간', reset(u.rateLimits, 'seven_day'), week, tone(week, lv.week))}
+            {cell('ctx', '컨텍스트', ctxText(u), ctx, tone(ctx, lv.ctx, 'ok'))}
+            {/* 버튼은 칸 밖에 둬서 세 막대 길이가 같게. 배너 끄기는 /cs-off */}
+            <Box key="btns" alignItems="center" gap={1}>
               <Button key="ctxdetail" label={open ? '▴' : '▾'} plain dimColor onPress={() => update($, ctxOpen, v => !v)} />
-              {/* 압축 버튼을 컨텍스트 칸 안(gap 1)에 둬서 ▾ 바로 옆에 가깝게 붙임. 배너 끄기는 /cs-off */}
               <Button key="compact" label={compactLabel} dimColor={!queued} onPress={() => compactNow($)} />
             </Box>
           </Box>
